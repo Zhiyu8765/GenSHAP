@@ -3,6 +3,8 @@
 '''
 from ast import increment_lineno
 
+from Scripts.PerformancePlots import PerformancePlot_Removal
+
 'Check Working Directory'
 import sys
 print(sys.executable)
@@ -91,3 +93,42 @@ plt.title('PCA plot with TMC Shapley Value Sizes')
 plt.colorbar(label = 'Target Class')
 plt.tight_layout()
 plt.savefig('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/PCA_Iris_DShap(0.1).png', dpi=300, bbox_inches='tight')
+
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+path = '/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/Removal_Iris_High(0.1).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_Iris, G_Shap_Iris, LOO_Iris],
+                                                       X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+                                                       a = 0.05, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
+
+
+
+'''
+2. Data shapley values of Breast Cancer (Computed by DataShapley)
+'''
+data_bc = load_breast_cancer()
+X_bc = data_bc.data
+y_bc = data_bc.target
+X_train, X_test, y_train, y_test = train_test_split(X_bc, y_bc, test_size=0.5, random_state=0)
+directory_bc = './temp_bc'
+shapley_bc = DShap(X_train, y_train, X_test, y_test, 1000, sources = None,
+                   sample_weight = None, model_family = model,metric = 'accuracy',
+                   overwrite = True, directory = directory_bc, seed = 250324)
+shapley_bc.run(save_every=100, err=0.0001, g_run=True, loo_run=True)
+# error = 0.1, time (2mins)
+# error = 0.01, time (5mins)
+# error = 0.001, time (3h30mins)
+# error = 0.0005, time (>7h)
+# error = 0.0001, time (20250328 09:56
+TMC_Shap_bc = shapley_bc.vals_tmc
+G_Shap_bc = shapley_bc.vals_g
+LOO_bc = shapley_bc.vals_loo
+increments_bc = np.arange(0, len(X_train)+1, 10)
+rand_bc = np.random.rand(len(X_train))
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+path = '/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/Removal_BC_Low(0.0005).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_bc, G_Shap_bc, LOO_bc],
+                                                       X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+                                                       a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, save_path=path)
+z
