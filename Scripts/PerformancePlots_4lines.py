@@ -1,13 +1,8 @@
-'''
-1. Plot 1: Accuracy vs. % Removal (High Value First)
-'''
-
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 import warnings
-
 
 def PerformancePlot_Removal(vals, X_train, y_train, X_test, y_test, a, b, order='descending', random_iters=10,
                             save_path=None):
@@ -86,8 +81,8 @@ def PerformancePlot_Removal(vals, X_train, y_train, X_test, y_test, a, b, order=
     if len(vals) == 3:
         results_renamed = {}
         results_renamed['TMC Shapley'] = results.pop('valuation 1')
-        results_renamed['G Shapley'] = results.pop('valuation 2')
-        results_renamed['LOO'] = results.pop('valuation 3')
+        #results_renamed['G Shapley'] = results.pop('valuation 2')
+        results_renamed['LOO'] = results.pop('valuation 2')
         results_renamed['Random'] = results.pop('Random Baseline')
         results = results_renamed
 
