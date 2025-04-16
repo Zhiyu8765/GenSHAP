@@ -122,8 +122,8 @@ directory_bc = './temp_bc'
 shapley_bc = DShap(X_train, y_train, X_test, y_test, num_test, sources = None,
                    sample_weight = None, model_family = model,metric = 'accuracy',
                    overwrite = True, directory = directory_bc, seed = 250415,
-                   max_iter = 100, tol = 1e-12)
-shapley_bc.run(save_every=100, err=0.1, g_run=True, loo_run=True)
+                   max_iter = 10, tol = 1e-30)
+shapley_bc.run(save_every=100, err=0.001, g_run=True, loo_run=True)
 # error = 0.1, time (2mins)
 # error = 0.01, time (5mins)
 # error = 0.001, time (3h30mins)
@@ -136,10 +136,10 @@ increments_bc = np.arange(0, len(X_train)+1, 10)
 rand_bc = np.random.rand(len(X_train))
 
 ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250410/Removal_BC_Low(0.1).png'
-removal_percentages, results = PerformancePlot_Removal(vals_dict={'TMC Shapley': TMC_Shap_bc, 'LOO': LOO_bc},
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250415/Removal_BC_High(0.1_200).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_bc, G_Shap_bc, LOO_bc],
                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
-                                                       a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, seed = 42, save_path=path)
+                                                       a = 0.03, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
 
 ' Algorithm = KNN'
 model = 'KNN'

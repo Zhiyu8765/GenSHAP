@@ -81,8 +81,8 @@ def PerformancePlot_Removal(vals, X_train, y_train, X_test, y_test, a, b, order=
     if len(vals) == 3:
         results_renamed = {}
         results_renamed['TMC Shapley'] = results.pop('valuation 1')
-        #results_renamed['G Shapley'] = results.pop('valuation 2')
-        results_renamed['LOO'] = results.pop('valuation 2')
+        results_renamed['G Shapley'] = results.pop('valuation 2')
+        results_renamed['LOO'] = results.pop('valuation 3')
         results_renamed['Random'] = results.pop('Random Baseline')
         results = results_renamed
 
