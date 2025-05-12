@@ -27,6 +27,7 @@ from Shapley import ShapNN
 from DShap import DShap
 from shap_utils import *
 from ucimlrepo import fetch_ucirepo
+from sklearn.utils import shuffle
 from sklearn.utils import resample
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -45,67 +46,67 @@ MEM_DIR = './'
 # print(inspect.getsource(shap_utils))
 
 
-'''
-1. Data shapley values of Iris (Computed by DataShapley)
-'''
-
-'Load data'
-iris = load_iris()
-X = iris.data
-y = iris.target
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=0)
-
-'Implementation of DataShapley'
-model = 'logistic'
-problem = 'classification'
-num_test = 1000
-directory = './temp'
-shapley_Iris = DShap(X_train, y_train, X_test, y_test, num_test,sources = None,
-                     sample_weight = None, model_family = model, metric = 'accuracy',
-                     overwrite = True, directory = directory, seed = 250324)
-shapley_Iris.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
-TMC_Shap_Iris = shapley_Iris.vals_tmc
-G_Shap_Iris = shapley_Iris.vals_g
-LOO_Iris = shapley_Iris.vals_loo
-
-'Construct dataframe by adding data shapley values'
-iris_df = pd.DataFrame(X_train, columns = ['sepal length', 'sepal width',
-                                           'petal length', 'petal width'])
-iris_df['target'] = y_train
-iris_df['TMC_Shapley'] = TMC_Shap_Iris
-iris_df['G_Shapley'] = G_Shap_Iris
-iris_df['LOO_Shapley'] = LOO_Iris
-
-'Evaluation by plots'
-### ----- Plot 0. PCA ----- ###
-# Standardized X_train
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-pca = PCA(n_components=2)
-X_pca = pca.fit_transform(X_train_scaled)
-
-# Normalized Data Shapley Values
-min_shapley = iris_df['TMC_Shapley'].min()
-max_shapley = iris_df['TMC_Shapley'].max()
-iris_df['TMC_Shapley_Normalized'] = (iris_df['TMC_Shapley'] - min_shapley) / (max_shapley - min_shapley)
-plt.figure(figsize = (8, 6))
-plt.scatter(X_pca[:, 0], X_pca[:, 1], c = iris_df['target'],
-            s = iris_df['TMC_Shapley_Normalized']*1000, cmap = 'viridis',
-            alpha = 0.6, edgecolors = "w", linewidth = 0.5)
-plt.xlabel('Principal Component 1')
-plt.ylabel('Principal Component 2')
-plt.title('PCA plot with TMC Shapley Value Sizes')
-plt.colorbar(label = 'Target Class')
-plt.tight_layout()
-plt.savefig('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/PCA_Iris_DShap(0.1).png', dpi=300, bbox_inches='tight')
-
-
-### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-path = '/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/Removal_Iris_High(0.1).png'
-removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_Iris, G_Shap_Iris, LOO_Iris],
-                                                       X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
-                                                       a = 0.05, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
-
+# '''
+# 1. Data shapley values of Iris (Computed by DataShapley)
+# '''
+#
+# 'Load data'
+# iris = load_iris()
+# X = iris.data
+# y = iris.target
+# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=0)
+#
+# 'Implementation of DataShapley'
+# model = 'logistic'
+# problem = 'classification'
+# num_test = 1000
+# directory = './temp'
+# shapley_Iris = DShap(X_train, y_train, X_test, y_test, num_test,sources = None,
+#                      sample_weight = None, model_family = model, metric = 'accuracy',
+#                      overwrite = True, directory = directory, seed = 250324)
+# shapley_Iris.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
+# TMC_Shap_Iris = shapley_Iris.vals_tmc
+# G_Shap_Iris = shapley_Iris.vals_g
+# LOO_Iris = shapley_Iris.vals_loo
+#
+# 'Construct dataframe by adding data shapley values'
+# iris_df = pd.DataFrame(X_train, columns = ['sepal length', 'sepal width',
+#                                            'petal length', 'petal width'])
+# iris_df['target'] = y_train
+# iris_df['TMC_Shapley'] = TMC_Shap_Iris
+# iris_df['G_Shapley'] = G_Shap_Iris
+# iris_df['LOO_Shapley'] = LOO_Iris
+#
+# 'Evaluation by plots'
+# ### ----- Plot 0. PCA ----- ###
+# # Standardized X_train
+# scaler = StandardScaler()
+# X_train_scaled = scaler.fit_transform(X_train)
+# pca = PCA(n_components=2)
+# X_pca = pca.fit_transform(X_train_scaled)
+#
+# # Normalized Data Shapley Values
+# min_shapley = iris_df['TMC_Shapley'].min()
+# max_shapley = iris_df['TMC_Shapley'].max()
+# iris_df['TMC_Shapley_Normalized'] = (iris_df['TMC_Shapley'] - min_shapley) / (max_shapley - min_shapley)
+# plt.figure(figsize = (8, 6))
+# plt.scatter(X_pca[:, 0], X_pca[:, 1], c = iris_df['target'],
+#             s = iris_df['TMC_Shapley_Normalized']*1000, cmap = 'viridis',
+#             alpha = 0.6, edgecolors = "w", linewidth = 0.5)
+# plt.xlabel('Principal Component 1')
+# plt.ylabel('Principal Component 2')
+# plt.title('PCA plot with TMC Shapley Value Sizes')
+# plt.colorbar(label = 'Target Class')
+# plt.tight_layout()
+# plt.savefig('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/PCA_Iris_DShap(0.1).png', dpi=300, bbox_inches='tight')
+#
+#
+# ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+# path = '/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/Removal_Iris_High(0.1).png'
+# removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_Iris, G_Shap_Iris, LOO_Iris],
+#                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+#                                                        a = 0.05, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
+#
 
 
 '''
@@ -264,7 +265,7 @@ df = pd.concat([X_AIDS, y_AIDS], axis=1)
 target_col = y_AIDS.columns[0]
 df_class0 = df[df[target_col] == 0]
 df_class1 = df[df[target_col] == 1]
-df_class0_down = df_class0.sample(n=550, random_state=42)
+df_class0_down = df_class0.sample(n=1618, random_state=42)
 df_balanced = pd.concat([df_class0_down, df_class1]).sample(frac=1, random_state=42).reset_index(drop=True)
 X_balanced = df_balanced.drop(columns=[target_col])
 y_balanced = df_balanced[[target_col]]
@@ -286,7 +287,7 @@ y_test  = y_test.to_numpy().ravel()
 'Data Shapley'
 model = 'logistic'
 problem = 'classification'
-num_test = 536
+num_test = 1070
 directory_aids = './temp_aids'
 shapley_aids = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
                    sample_weight=None, model_family=model, metric='accuracy',
@@ -301,58 +302,224 @@ rand_AIDS = np.random.rand(len(X_train))
 
 
 ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250425/Removal_AIDS_Low_mean(0.01_500).png'
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250507/Removal_AIDS(Unbalanced)_High_mean(0.01_500).png'
 removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_AIDS, G_Shap_AIDS, LOO_AIDS],
                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
-                                                       a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, save_path=path)
+                                                       a = 0.03, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
 
 
+
+# '''
+# 5. Data shapley values of Estimation of Thyroid Disease (Computed by DataShapley) -- not suitable
+# '''
+# 'Data Acquisition'
+# AGE = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/AGE/age.csv')
+# age_col = AGE.iloc[:, 2]
+# # count_ge_40 = (age_col >= 40).sum()
+# # count_lt_40 = (age_col < 40).sum()
+# # print("Number of rows with age >= 40:", count_ge_40)
+# # print("Number of rows with age < 40:", count_lt_40)
+# y_AGE = (AGE['RIDAGEYR'] >= 40).astype(int)
+# X_AGE = AGE.iloc[:, 3:10]
+#
+# 'Data Pre-Processing'
+# categorical_cols = ['RIAGENDR']
+# X_AGE = pd.get_dummies(X_AGE, columns=categorical_cols)
+# numerical_cols = [col for col in X_AGE if col not in categorical_cols]
+# scaler = MinMaxScaler()
+# X_AGE[numerical_cols] = scaler.fit_transform(X_AGE[numerical_cols])
+# X_train, X_test, y_train, y_test = train_test_split(X_AGE, y_AGE, test_size=0.5, random_state=0)
+# X_train = X_train.to_numpy()
+# X_test  = X_test.to_numpy()
+# y_train = y_train.to_numpy(dtype=np.int64)
+# y_test  = y_test.to_numpy(dtype=np.int64)
+#
+#
+# 'Data Shapley'
+# model = 'logistic'
+# problem = 'classification'
+# num_test = 1139
+# directory_age = './temp_age'
+# shapley_age = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
+#                    sample_weight=None, model_family=model, metric='accuracy',
+#                    overwrite=True, directory=directory_age, seed=250421,
+#                    max_iter=500, tol=1e-20)
+# shapley_age.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+# TMC_Shap_age = shapley_age.vals_tmc
+# G_Shap_age = shapley_age.vals_g
+# LOO_age = shapley_age.vals_loo
+# increments_age = np.arange(0, len(X_train)+1, 10)
+# rand_age = np.random.rand(len(X_train))
+#
+#
+# ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250422/Removal_AGE_Low(0.01_500).png'
+# removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_age, G_Shap_age, LOO_age],
+#                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+#                                                        a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, save_path=path)
+#
 
 '''
-5. Data shapley values of Estimation of Thyroid Disease (Computed by DataShapley) -- not suitable
+6. Data shapley values of MNIST (0&1) (Computed by DataShapley) 
 '''
-'Data Acquisition'
-AGE = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/AGE/age.csv')
-age_col = AGE.iloc[:, 2]
-# count_ge_40 = (age_col >= 40).sum()
-# count_lt_40 = (age_col < 40).sum()
-# print("Number of rows with age >= 40:", count_ge_40)
-# print("Number of rows with age < 40:", count_lt_40)
-y_AGE = (AGE['RIDAGEYR'] >= 40).astype(int)
-X_AGE = AGE.iloc[:, 3:10]
+import tensorflow as tf
+(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
+train_filter = (y_train == 0) | (y_train == 1)
+test_filter = (y_test == 0) | (y_test == 1)
+x_train = X_train[train_filter]
+y_train = y_train[train_filter]
+x_test = X_test[test_filter]
+y_test = y_test[test_filter]
+# class_counts_train = pd.Series(y_train).value_counts()
+# class_counts_test = pd.Series(y_test).value_counts()
+# print("Training set class counts:\n", class_counts_train)
+# print("Test set class counts:\n", class_counts_test)
+'Balance by down-sampling'
+df_train = pd.DataFrame({'label': y_train})
+df_test = pd.DataFrame({'label': y_test})
+train_0 = df_train[df_train['label'] == 0].sample(n=200, random_state = 505).index
+train_1 = df_train[df_train['label'] == 1].sample(n=200, random_state = 505).index
+test_0 = df_test[df_test['label'] == 0].sample(n=200, random_state = 505).index
+test_1 = df_test[df_test['label'] == 1].sample(n=200, random_state = 505).index
+X_train = np.concatenate([X_train[train_0], X_train[train_1]])
+y_train = np.concatenate([y_train[train_0], y_train[train_1]])
+X_test = np.concatenate([X_test[test_0], X_test[test_1]])
+y_test = np.concatenate([y_test[test_0], y_test[test_1]])
+X_train, y_train = shuffle(X_train, y_train)
+X_test, y_test = shuffle(X_test, y_test)
+'Flatten the images'
+X_train = X_train.reshape(X_train.shape[0], -1)
+X_test = X_test.reshape(X_test.shape[0], -1)
+'Standardisation'
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+y_train = np.array(y_train, dtype=np.int64)
+y_test  = np.array(y_test, dtype=np.int64)
 
-'Data Pre-Processing'
-categorical_cols = ['RIAGENDR']
-X_AGE = pd.get_dummies(X_AGE, columns=categorical_cols)
-numerical_cols = [col for col in X_AGE if col not in categorical_cols]
-scaler = MinMaxScaler()
-X_AGE[numerical_cols] = scaler.fit_transform(X_AGE[numerical_cols])
-X_train, X_test, y_train, y_test = train_test_split(X_AGE, y_AGE, test_size=0.5, random_state=0)
-X_train = X_train.to_numpy()
-X_test  = X_test.to_numpy()
-y_train = y_train.to_numpy(dtype=np.int64)
-y_test  = y_test.to_numpy(dtype=np.int64)
 
 
 'Data Shapley'
 model = 'logistic'
 problem = 'classification'
-num_test = 1139
-directory_age = './temp_age'
-shapley_age = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
+num_test = 50
+directory_Mnist01 = './temp_Mnist01'
+shapley_Mnist01 = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
                    sample_weight=None, model_family=model, metric='accuracy',
-                   overwrite=True, directory=directory_age, seed=250421,
+                   overwrite=True, directory=directory_Mnist01, seed=250505,
                    max_iter=500, tol=1e-20)
-shapley_age.run(save_every=100, err=0.01, g_run=True, loo_run=True)
-TMC_Shap_age = shapley_age.vals_tmc
-G_Shap_age = shapley_age.vals_g
-LOO_age = shapley_age.vals_loo
+shapley_Mnist01.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+TMC_Shap_Mnist01 = shapley_Mnist01.vals_tmc
+G_Shap_Mnist01 = shapley_Mnist01.vals_g
+LOO_Mnist01 = shapley_Mnist01.vals_loo
 increments_age = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 
 
 ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250422/Removal_AGE_Low(0.01_500).png'
-removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_age, G_Shap_age, LOO_age],
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250507/Removal_Mnist01_High(0.01_500).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_Mnist01, G_Shap_Mnist01, LOO_Mnist01],
+                                                       X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+                                                       a = 0.03, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
+
+
+'''
+7. Data shapley values of Maternal Health Risk (Computed by DataShapley) 
+'''
+maternal = fetch_ucirepo(id=863)
+X_maternal = maternal.data.features
+y_maternal = maternal.data.targets
+#class_counts = y_maternal.value_counts()
+# print(class_counts) # low risk: 406; mid risk: 336; high risk: 272
+df = pd.concat([X_maternal, y_maternal], axis=1)
+target_col = y_maternal.columns[0]
+df_class0 = df[df[target_col] == 'low risk']
+df_class1 = df[df[target_col] == 'high risk']
+df_class0_down = df_class0.sample(n=272, random_state=42)
+df_balanced = pd.concat([df_class0_down, df_class1]).sample(frac=1, random_state=42).reset_index(drop=True)
+label = {'low risk': 0, 'high risk': 1}
+df_balanced[target_col] = df_balanced[target_col].map(label)
+X_balanced = df_balanced.drop(columns=[target_col])
+y_balanced = df_balanced[[target_col]]
+
+'Data Pre-Processing'
+scaler = StandardScaler()
+X_balanced[:] = scaler.fit_transform(X_balanced)
+X_train, X_test, y_train, y_test = train_test_split(X_balanced, y_balanced, test_size=0.5, random_state=0)
+X_train = X_train.to_numpy()
+X_test  = X_test.to_numpy()
+y_train = y_train.to_numpy().ravel()
+y_test  = y_test.to_numpy().ravel()
+
+'Data Shapley'
+model = 'logistic'
+problem = 'classification'
+num_test = 272
+directory_maternal = './temp_maternal'
+shapley_maternal = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
+                   sample_weight=None, model_family=model, metric='accuracy',
+                   overwrite=True, directory=directory_maternal, seed=250421,
+                   max_iter=500, tol=1e-20)
+shapley_maternal.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+TMC_Shap_maternal = shapley_maternal.vals_tmc
+G_Shap_maternal = shapley_maternal.vals_g
+LOO_maternal = shapley_maternal.vals_loo
+increments_maternal = np.arange(0, len(X_train)+1, 10)
+rand_maternal = np.random.rand(len(X_train))
+
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250507/Removal_maternal_High_mean(0.01_500).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_maternal, G_Shap_maternal, LOO_maternal],
+                                                       X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
+                                                       a = 0.03, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
+
+
+'''
+7. Data shapley values of Letter Recognition (Computed by DataShapley) 
+'''
+letter = fetch_ucirepo(id=59)
+data = letter['data']['original']
+X = data.drop(columns='lettr')
+y = data['lettr']
+print(X.head())
+print(y.head())
+df = pd.concat([X, y], axis=1)
+df.columns = list(X.columns) + ["label"]
+df_AB = df.query('label == "A" or label == "B"')
+print(f"Shape of df_AB: {df_AB.shape}")
+X_AB = df_AB.drop(columns=["label"])
+y_AB = df_AB["label"]
+y_AB = y_AB.map({"A": 0, "B": 1})
+class_counts = y_AB.value_counts()
+print(class_counts) # A: 789 ; B: 766
+
+'Standardisation'
+scaler = StandardScaler()
+X_AB = scaler.fit_transform(X_AB)
+X_train, X_test, y_train, y_test = train_test_split(X_AB, y_AB, test_size=0.5, random_state=0)
+y_train = y_train.to_numpy().ravel()
+y_test  = y_test.to_numpy().ravel()
+
+'Data Shapley'
+model = 'logistic'
+problem = 'classification'
+num_test = 778
+directory_letterAB = './temp_letterAB'
+shapley_letterAB = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
+                   sample_weight=None, model_family=model, metric='accuracy',
+                   overwrite=True, directory=directory_letterAB, seed=250505,
+                   max_iter=500, tol=1e-20)
+shapley_letterAB.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+TMC_Shap_letterAB = shapley_letterAB.vals_tmc
+G_Shap_letterAB = shapley_letterAB.vals_g
+LOO_letterAB = shapley_letterAB.vals_loo
+increments_letterAB = np.arange(0, len(X_train)+1, 10)
+rand_letterAB = np.random.rand(len(X_train))
+
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250507/Removal_letterAB_Low(0.01_500).png'
+removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_letterAB, G_Shap_letterAB, LOO_letterAB],
                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
                                                        a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, save_path=path)
