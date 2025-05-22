@@ -41,72 +41,81 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 #%matplotlib inline
 MEM_DIR = './'
 
-# import inspect
-# import shap_utils
-# print(inspect.getsource(shap_utils))
+import inspect
+import shap_utils
+import Shapley
+print(inspect.getsource(shap_utils))
+print(inspect.getsource(Shapley))
 
 
 # '''
 # 1. Data shapley values of Iris (Computed by DataShapley)
 # '''
 #
-# 'Load data'
-# iris = load_iris()
-# X = iris.data
-# y = iris.target
-# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=0)
-#
-# 'Implementation of DataShapley'
-# model = 'logistic'
-# problem = 'classification'
-# num_test = 1000
-# directory = './temp'
-# shapley_Iris = DShap(X_train, y_train, X_test, y_test, num_test,sources = None,
-#                      sample_weight = None, model_family = model, metric = 'accuracy',
-#                      overwrite = True, directory = directory, seed = 250324)
-# shapley_Iris.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
-# TMC_Shap_Iris = shapley_Iris.vals_tmc
-# G_Shap_Iris = shapley_Iris.vals_g
-# LOO_Iris = shapley_Iris.vals_loo
-#
-# 'Construct dataframe by adding data shapley values'
-# iris_df = pd.DataFrame(X_train, columns = ['sepal length', 'sepal width',
-#                                            'petal length', 'petal width'])
-# iris_df['target'] = y_train
-# iris_df['TMC_Shapley'] = TMC_Shap_Iris
-# iris_df['G_Shapley'] = G_Shap_Iris
-# iris_df['LOO_Shapley'] = LOO_Iris
-#
-# 'Evaluation by plots'
-# ### ----- Plot 0. PCA ----- ###
-# # Standardized X_train
-# scaler = StandardScaler()
-# X_train_scaled = scaler.fit_transform(X_train)
-# pca = PCA(n_components=2)
-# X_pca = pca.fit_transform(X_train_scaled)
-#
-# # Normalized Data Shapley Values
-# min_shapley = iris_df['TMC_Shapley'].min()
-# max_shapley = iris_df['TMC_Shapley'].max()
-# iris_df['TMC_Shapley_Normalized'] = (iris_df['TMC_Shapley'] - min_shapley) / (max_shapley - min_shapley)
-# plt.figure(figsize = (8, 6))
-# plt.scatter(X_pca[:, 0], X_pca[:, 1], c = iris_df['target'],
-#             s = iris_df['TMC_Shapley_Normalized']*1000, cmap = 'viridis',
-#             alpha = 0.6, edgecolors = "w", linewidth = 0.5)
-# plt.xlabel('Principal Component 1')
-# plt.ylabel('Principal Component 2')
-# plt.title('PCA plot with TMC Shapley Value Sizes')
-# plt.colorbar(label = 'Target Class')
-# plt.tight_layout()
-# plt.savefig('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/PCA_Iris_DShap(0.1).png', dpi=300, bbox_inches='tight')
-#
-#
-# ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-# path = '/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/Removal_Iris_High(0.1).png'
-# removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_Iris, G_Shap_Iris, LOO_Iris],
-#                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
-#                                                        a = 0.05, b = 0.4, order = 'descending', random_iters = 10, save_path=path)
-#
+'Load data'
+iris = load_iris()
+X = iris.data
+y = iris.target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=0)
+
+'Implementation of DataShapley'
+model = 'logistic'
+problem = 'classification'
+num_test = 75
+directory = './temp'
+shapley_Iris = DShap(X_train, y_train, X_test, y_test, num_test, sources = None,
+                   sample_weight = None, model_family = model,metric = 'accuracy',
+                   overwrite = True, directory = directory, seed = 250415,
+                   max_iter = 100, tol = 1e-5)
+shapley_Iris.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
+
+
+'Construct dataframe by adding data shapley values'
+iris_df = pd.DataFrame(X_train, columns = ['sepal length', 'sepal width',
+                                           'petal length', 'petal width'])
+iris_df['target'] = y_train
+iris_df['TMC_Shapley'] = TMC_Shap_Iris
+iris_df['G_Shapley'] = G_Shap_Iris
+iris_df['LOO_Shapley'] = LOO_Iris
+
+'Evaluation by plots'
+### ----- Plot 0. PCA ----- ###
+# Standardized X_train
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_train_scaled)
+
+# Normalized Data Shapley Values
+min_shapley = iris_df['TMC_Shapley'].min()
+max_shapley = iris_df['TMC_Shapley'].max()
+iris_df['TMC_Shapley_Normalized'] = (iris_df['TMC_Shapley'] - min_shapley) / (max_shapley - min_shapley)
+plt.figure(figsize = (8, 6))
+plt.scatter(X_pca[:, 0], X_pca[:, 1], c = iris_df['target'],
+            s = iris_df['TMC_Shapley_Normalized']*1000, cmap = 'viridis',
+            alpha = 0.6, edgecolors = "w", linewidth = 0.5)
+plt.xlabel('Principal Component 1')
+plt.ylabel('Principal Component 2')
+plt.title('PCA plot with TMC Shapley Value Sizes')
+plt.colorbar(label = 'Target Class')
+plt.tight_layout()
+plt.savefig('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250324/PCA_Iris_DShap(0.1).png', dpi=300, bbox_inches='tight')
+
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+TMC_Shap_Iris = shapley_Iris.vals_tmc
+G_Shap_Iris = shapley_Iris.vals_g
+LOO_Iris = shapley_Iris.vals_loo
+increments_Iris = np.arange(0, len(X_train)+1, 10)
+rand_Iris = np.random.rand(len(X_train))
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515/Removal_Iris_High(0.1).png'
+removal_percentages, results = PerformancePlot_Removal(
+    vals={'TMC Shapley': TMC_Shap_Iris,
+          'G Shapley': G_Shap_Iris,
+          'LOO':         LOO_Iris},
+    X_train=X_train, y_train=y_train, X_test=X_test,   y_test=y_test,
+    a=0.05, b=0.4, ylim=(50, 100), order='descending', random_iters=10, save_path=path)
+
 
 
 '''
@@ -523,3 +532,59 @@ path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_
 removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_letterAB, G_Shap_letterAB, LOO_letterAB],
                                                        X_train = X_train, y_train = y_train, X_test = X_test, y_test = y_test,
                                                        a = 0.03, b = 0.4, order = 'ascending', random_iters = 10, save_path=path)
+
+
+
+'''
+8. Data shapley values of Mushroom (Computed by DataShapley) (Pattern unwanted)
+'''
+mushroom = fetch_ucirepo(id=73)
+X_mushroom = mushroom.data.features
+y_mushroom = mushroom.data.targets
+class_counts = y_mushroom.value_counts()
+print(class_counts) # edible: 4208; poisson: 3916
+df = pd.concat([X_mushroom, y_mushroom], axis=1)
+target_col = y_mushroom.columns[0]
+df_class0 = df[df[target_col] == 'e']
+df_class1 = df[df[target_col] == 'p']
+df_class0_down = df_class0.sample(n=1000, random_state=42)
+df_class1_down = df_class1.sample(n=1000, random_state=42)
+df_balanced = pd.concat([df_class0_down, df_class1_down]).sample(frac=1, random_state=42).reset_index(drop=True)
+label = {'e': 0, 'p': 1}
+df_balanced[target_col] = df_balanced[target_col].map(label)
+X_balanced = df_balanced.drop(columns=[target_col])
+y_balanced = df_balanced[[target_col]]
+
+'Data Pre-Processing'
+X_encoded = pd.get_dummies(X_balanced)
+X_train, X_test, y_train, y_test = train_test_split(X_encoded, y_balanced, test_size=0.5, random_state=0)
+X_train = X_train.to_numpy()
+X_test  = X_test.to_numpy()
+y_train = y_train.to_numpy().ravel()
+y_test  = y_test.to_numpy().ravel()
+
+'Data Shapley'
+model = 'logistic'
+problem = 'classification'
+num_test = 100
+directory_mushroom = './temp_mushroom'
+shapley_mushroom = DShap(X_train, y_train, X_test, y_test, num_test, sources=None,
+                   sample_weight=None, model_family=model, metric='accuracy',
+                   overwrite=True, directory=directory_mushroom, seed=250421,
+                   max_iter=500, tol=1e-20)
+shapley_mushroom.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+TMC_Shap_mushroom = shapley_mushroom.vals_tmc
+G_Shap_mushroom = shapley_mushroom.vals_g
+LOO_mushroom = shapley_mushroom.vals_loo
+increments_mushroom = np.arange(0, len(X_train)+1, 10)
+rand_mushroom = np.random.rand(len(X_train))
+
+
+### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515/Removal_mushroom_High(1000).png'
+removal_percentages, results = PerformancePlot_Removal(
+    vals={'TMC Shapley': TMC_Shap_mushroom,
+          'G Shapley': G_Shap_mushroom,
+          'LOO':         LOO_mushroom},
+    X_train=X_train, y_train=y_train, X_test=X_test,   y_test=y_test,
+    a=0.05, b=0.4, ylim=(97, 100), order='descending', random_iters=10, save_path=path)
