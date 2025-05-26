@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import torchsort
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -26,7 +27,7 @@ def total_utility(X_train, y_train, X_test, y_test, baseline=0.5):
     return acc - baseline
 
 def utility_normalisation(phi, total_utility):
-    return phi / (total_utility + 1e-20)
+    return phi / (total_utility)
 
 '''
 2. Gaussian Affinity Matrix
@@ -90,16 +91,18 @@ class GINShap(torch.nn.Module):
 '''
 6. Data Preprocessing
 '''
-def load_and_preprocess(csv_path, X_test, y_test, d=32):
+def load_and_preprocess(csv_path,test_csv_path, d=32):
     df    = pd.read_csv(csv_path)
     X_raw = pd.get_dummies(df.drop(columns=['label','TMC_Shap','G_Shap','LOO'])).to_numpy()
     y     = df['label'].to_numpy()
     phi   = df['TMC_Shap'].to_numpy()
 
+    df_test = pd.read_csv(test_csv_path)
+    X_test = pd.get_dummies(df_test.drop(columns = ['label'])).to_numpy()
+    y_test = df_test['label'].to_numpy()
+
     util      = total_utility(X_raw, y, X_test, y_test)
     phi_norm  = utility_normalisation(phi, util)
-
-    phi_norm -= phi_norm.mean()
 
     A     = compute_Affinity(X_raw)[0]
     X_svd = SVD_Transform(A, d=d)
@@ -108,15 +111,7 @@ def load_and_preprocess(csv_path, X_test, y_test, d=32):
 '''
 7. Training
 '''
-def train(model, data_list, X_test, y_test,
-          epochs=300, lr=1e-3, B=32,
-          lam_eff=1.0, lam_var=0.1, lam_sign=2.0):
-    """
-    model      – GNN to be optimised
-    data_list  – list of torch_geometric.data.Data objects (each with .X_raw, .y_raw, .y)
-    X_test     – test-set features  (NumPy array)
-    y_test     – test-set labels    (NumPy array)
-    """
+def train(model, data_list, epochs=500, lr=1e-4, lam_sign=1.0, lam_eff = 0.5, lam_rank = 1.0):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for ep in range(1, epochs + 1):
@@ -124,43 +119,36 @@ def train(model, data_list, X_test, y_test,
         optimizer.zero_grad()
 
         for data in data_list:
-            X_raw, y_raw = data.X_raw, data.y_raw
-            phi_hat = model(data).view(-1)                # predicted Shapley values
-            N       = phi_hat.numel()
-
-            'Loss on Monte Carlo Estimation'
-            mc_losses = []
-            for _ in range(B):
-                i      = np.random.randint(N)
-                mask   = np.ones(N, dtype=bool); mask[i] = False
-                S_idx  = np.where(mask & (np.random.rand(N) < 0.5))[0]
-
-                v_S   = total_utility(X_raw[S_idx], y_raw[S_idx], X_test, y_test)
-                v_Si  = total_utility(np.vstack([X_raw[S_idx], X_raw[i]]),
-                                     np.hstack([y_raw[S_idx], y_raw[i]]),
-                                     X_test, y_test)
-                mc_losses.append((phi_hat[i] - (v_Si - v_S))**2)
-
-            loss_mc = torch.stack(mc_losses).mean()
-
-            'Efficiency penalty term'
+            phi_hat = model(data).view(-1)
             phi_true = data.y.view(-1)
-            loss_eff = ((phi_hat.sum() - phi_true.sum()) / N) ** 2
-            loss_var = (phi_hat.var(unbiased=False) -
-                        phi_true.var(unbiased=False)) ** 2
+            N = phi_hat.shape[0]
 
-            'Sign penalty term'
-            sign_target = (phi_true > 0).float()
-            loss_sign   = F.binary_cross_entropy_with_logits(phi_hat, sign_target)
+            '1. Relative MSE'
+            relative_MSE = ((phi_hat - phi_true)/(phi_true).abs() + 1e-10 ).pow(2).mean()
+
+            '2. Penalty term on sign'
+            loss_sign = torch.relu(-phi_hat * phi_true).mean()
+
+            '3. Penalty on efficiency property'
+            loss_eff = (phi_hat.sum() - phi_true.sum()).pow(2)
+
+            '4. Penalty on ranking'
+            TAU = 1.0
+            rank_pred = torchsort.soft_rank(
+                phi_hat.unsqueeze(0),
+                regularization_strength=TAU
+            ).squeeze(0)
+            rank_true = torchsort.soft_rank(
+                phi_true.unsqueeze(0),
+                regularization_strength=TAU
+            ).squeeze(0)
+            loss_rank = F.mse_loss(rank_pred, rank_true)
 
             'Total Loss'
-            loss = (loss_mc
-                    + lam_eff  * loss_eff
-                    + lam_var  * loss_var
-                    + lam_sign * loss_sign)
-
+            loss = (relative_MSE + lam_sign * loss_sign + lam_eff * loss_eff +  lam_rank * loss_rank)
+            #loss = loss/len(data_list)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             total_loss_ep += loss.item()
 
         optimizer.step()
@@ -171,69 +159,133 @@ def train(model, data_list, X_test, y_test,
 '''
 8. Prediction
 '''
-@torch.no_grad()
-def predict(model, data): return model(data).squeeze().cpu().numpy()
+def predict(model, data):
+    with torch.no_grad():
+        return model(data).squeeze().cpu().numpy()
 
 '''
 9. Implementation
 '''
 if __name__ == '__main__':
     BASE   = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS'
-    BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515'
-    paths  = [f'{BASE}/train{i}.csv' for i in (1,2,3)]
+    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515'
+    Train_Test_Pairs = [
+        (f'{BASE}/train1.csv', f'{BASE}/test.csv'),
+        (f'{BASE}/train2.csv', f'{BASE}/test.csv'),
+        (f'{BASE}/train4.csv', f'{BASE}/test4.csv'),
+        (f'{BASE}/train5.csv', f'{BASE}/test5.csv'),
+        (f'{BASE}/train6.csv', f'{BASE}/test6.csv')
+    ]
+    holdout_train_csv = f'{BASE}/train3.csv'
+    holdout_test_csv = f'{BASE}/test.csv'
 
-    test_df = pd.read_csv(f'{BASE}/test.csv')
-    X_test  = pd.get_dummies(test_df.drop(columns=['label'])).to_numpy()
-    y_test  = test_df['label'].to_numpy()
+    data_list = [
+        load_and_preprocess(train_csv, test_csv)
+        for train_csv, test_csv in Train_Test_Pairs
+    ]
+    data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
 
-    data1 = load_and_preprocess(paths[0], X_test, y_test)
-    data2 = load_and_preprocess(paths[1], X_test, y_test)
-    data3 = load_and_preprocess(paths[2], X_test, y_test)
 
-    gnn = GINShap(data1.num_node_features, hidden_channels=256)
+    gnn = GINShap(data_list[0].num_node_features, hidden_channels=256)
+    train(gnn, data_list, epochs=700, lr=1e-2, lam_sign=0.25, lam_eff=0.5, lam_rank=10.0)
 
-    train(gnn, [data1, data2], X_test, y_test)
-
-    preds = predict(gnn, data3)           
+    preds = predict(gnn, data_holdout)
     print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
 
-    df3 = pd.read_csv(paths[2])
-    df3['predicted_TMC_Shap'] = preds
-    out_csv = f'{BASE2}/train3_predicted5.csv'
-    df3.to_csv(out_csv, index=False)
+    df_holdout = pd.read_csv(holdout_train_csv)
+    df_holdout['predicted_TMC_Shap'] = preds
+    out_csv = f'{PATH_OUT}/train3_predicted(5+1).csv'
+    df_holdout.to_csv(out_csv, index=False)
     print('saved ➜', out_csv)
 
 '''
 10. Performance Plots
 '''
+df_test = pd.read_csv(holdout_test_csv)
+X_test = pd.get_dummies(df_test.drop(columns = ['label'])).to_numpy()
+y_test = df_test['label'].to_numpy()
+
+X_train=pd.get_dummies(df_holdout.drop(
+                columns=['label','G_Shap','LOO','TMC_Shap','predicted_TMC_Shap'])).to_numpy()
+y_train = df_holdout['label'].to_numpy()
+TMC_true = df_holdout['TMC_Shap'].to_numpy()
+LOO_vals = df_holdout['LOO'].to_numpy()
+G_true = df_holdout['G_Shap'].to_numpy()
+
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515', 'AIDS3pred_(5+1)_high.png')
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-DATA_DIR   = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS'
-TEST_CSV   = os.path.join(DATA_DIR, 'test.csv')
-PRED_CSV   = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS/train3_predicted5.csv'
-df3_pred   = pd.read_csv(PRED_CSV)
-TMC_true   = df3_pred['TMC_Shap'].values
-LOO_vals   = df3_pred['LOO'].values
-G_true     = df3_pred['G_Shap'].values
-pred       = df3_pred['predicted_TMC_Shap']
-
-X_train3 = pd.get_dummies(
-    df3_pred.drop(columns=['label','G_Shap','LOO','TMC_Shap','predicted_TMC_Shap'])
-).to_numpy()
-y_train3 = df3_pred['label'].to_numpy()
-
-df_test = pd.read_csv(TEST_CSV)
-X_test  = pd.get_dummies(df_test.drop(columns=['label'])).to_numpy()
-y_test  = df_test['label'].to_numpy()
-
-PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515', 'AIDS3pred5_Low.png')
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_true,
-          'predicted TMC': pred,
+          'predicted TMC': preds,
           'G Shapley': G_true,
           'LOO': LOO_vals},
-    X_train=X_train3, y_train=y_train3,
-    X_test=X_test, y_test=y_test,
-    a=0.05, b=0.4, ylim=(72,85),
-    order='ascending', random_iters=10,
-    save_path=PERF_PATH
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (40,85),
+    order = 'descending', random_iters = 10,
+    save_path = PERF_PATH
+)
+
+
+
+'''
+9. Implementation: MNIST
+'''
+if __name__ == '__main__':
+    BASE   = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/MNIST'
+    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515'
+    Train_Test_Pairs = [
+        (f'{BASE}/train01.csv', f'{BASE}/test01.csv'),
+        (f'{BASE}/train12.csv', f'{BASE}/test12.csv'),
+        (f'{BASE}/train23.csv', f'{BASE}/test23.csv'),
+        (f'{BASE}/train34.csv', f'{BASE}/test34.csv')
+    ]
+    holdout_train_csv = f'{BASE}/train45.csv'
+    holdout_test_csv = f'{BASE}/test45.csv'
+
+    data_list = [
+        load_and_preprocess(train_csv, test_csv)
+        for train_csv, test_csv in Train_Test_Pairs
+    ]
+    data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
+
+
+    gnn = GINShap(data_list[0].num_node_features, hidden_channels=256)
+    train(gnn, data_list, epochs=500, lr=1e-3, lam_sign=0.5, lam_eff=0.5)
+
+    preds = predict(gnn, data_holdout)
+    print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
+
+    df_holdout = pd.read_csv(holdout_train_csv)
+    df_holdout['predicted_TMC_Shap'] = preds
+    out_csv = f'{PATH_OUT}/trainMNIST45_predicted(4+1).csv'
+    df_holdout.to_csv(out_csv, index=False)
+    print('saved ➜', out_csv)
+
+'''
+10. Performance Plots
+'''
+df_test = pd.read_csv(holdout_test_csv)
+X_test = pd.get_dummies(df_test.drop(columns = ['label'])).to_numpy()
+y_test = df_test['label'].to_numpy()
+
+X_train=pd.get_dummies(df_holdout.drop(
+                columns=['label','G_Shap','LOO','TMC_Shap','predicted_TMC_Shap'])).to_numpy()
+y_train = df_holdout['label'].to_numpy()
+TMC_true = df_holdout['TMC_Shap'].to_numpy()
+LOO_vals = df_holdout['LOO'].to_numpy()
+G_true = df_holdout['G_Shap'].to_numpy()
+
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515', 'MNISTpred_(4+1)_Low.png')
+from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+removal_percentages, results = PerformancePlot_Removal(
+    vals={'TMC Shapley': TMC_true,
+          'predicted TMC': preds,
+          'G Shapley': G_true,
+          'LOO': LOO_vals},
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (47,60),
+    order = 'ascending', random_iters = 10,
+    save_path = PERF_PATH
 )
