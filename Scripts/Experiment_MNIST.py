@@ -617,12 +617,12 @@ rand_age = np.random.rand(len(X_train))
 
 
 ### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515/Removal_Mnist56_Low(1000).png'
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515/Removal_Mnist56_High(1000).png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_Shap_Mnist56,
           'G Shapley': G_Shap_Mnist56,
           'LOO':         LOO_Mnist56}, X_train=X_train, y_train=y_train, X_test=X_test,   y_test=y_test,
-    a=0.05, b=0.4, ylim=(48, 61), order='ascending', random_iters=10, save_path=path)
+    a=0.05, b=0.4, ylim=(42, 51), order='descending', random_iters=10, save_path=path)
 
 'Save results'
 train45_path = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/MNIST/train45.csv"

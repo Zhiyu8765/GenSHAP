@@ -43,7 +43,7 @@ MEM_DIR = './'
 
 
 '''
-4. Data shapley values of Estimation of AIDS (Computed by DataShapley) -- suitable
+1. Data shapley values of Estimation of 3 Subsets AIDS (Extraction of Rows)
 '''
 'Data Acquisition'
 AIDS = fetch_ucirepo(id=890)
@@ -329,9 +329,8 @@ removal_percentages, results = PerformancePlot_Removal(vals = [TMC_Shap_AIDS3, G
 
 
 'Experiment on scaling methods of Data Shapley Values'
-DATA_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS_DataShapley'
-GRAPH_DIR = os.path.join(DATA_DIR, 'Graphs_250507')
-os.makedirs(GRAPH_DIR, exist_ok=True)
+DATA_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS'
+GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250526'
 
 TRAIN1_CSV = os.path.join(DATA_DIR, 'train1.csv')
 TRAIN2_CSV = os.path.join(DATA_DIR, 'train2.csv')
@@ -341,44 +340,45 @@ TEST_CSV = os.path.join(DATA_DIR, 'test.csv')
 Train_1 = pd.read_csv(TRAIN1_CSV)
 TMC_train1 = Train_1['TMC_Shap'].values
 G_train1 = Train_1['G_Shap'].values
-LOO_vals = Train_1['LOO_Shap'].values
+LOO_vals = Train_1['LOO'].values
 
-X_train1 = pd.get_dummies(Train_1.drop(columns=['label', 'G_Shap', 'LOO_Shap', 'TMC_Shap'])).to_numpy()
+X_train1 = pd.get_dummies(Train_1.drop(columns=['label', 'G_Shap', 'LOO', 'TMC_Shap'])).to_numpy()
 y_train1 = Train_1['label'].to_numpy()
 df_test = pd.read_csv(TEST_CSV)
 X_test = pd.get_dummies(df_test.drop(columns=['label'])).to_numpy()
 y_test = df_test['label'].to_numpy()
 
 'Min-Max Normalisation on TMC_Shap'
+TMC_Scaled = TMC_train1.reshape(-1, 1)
 scaler = MinMaxScaler()
-TMC_Scaled1 =scaler.fit_transform(TMC_train1.reshape(1, -1)).flatten()
+TMC_Scaled1 = scaler.fit_transform(TMC_Scaled).reshape(-1)
 
-PERF_PLOT_PNG = os.path.join(DATA_DIR, 'AIDS1_Minmax_High.png')
+PERF_PLOT_PNG = os.path.join(GRAPH_DIR, 'AIDS1_Minmax_Low.png')
 PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_train1, 'TMC Shapley(scaled by Min-Max)': TMC_Scaled1},
     X_train=X_train1, y_train=y_train1, X_test=X_test, y_test=y_test,
-    a=0.03, b=0.4, ylim=(50, 82), order='descending', random_iters=10, save_path=PERF_PLOT_PNG)
+    a=0.03, b=0.4, ylim=(77, 85), order='ascending', random_iters=10, save_path=PERF_PLOT_PNG)
 
 'Z-Score '
 scaler_z = StandardScaler()
-TMC_Zscore = scaler_z.fit_transform(TMC_train1.reshape(1, -1)).flatten()
+TMC_Zscore = scaler_z.fit_transform(TMC_Scaled).reshape(-1)
 
-PERF_PLOT_PNG = os.path.join(DATA_DIR, 'AIDS1_Zscore_Low.png')
+PERF_PLOT_PNG = os.path.join(GRAPH_DIR, 'AIDS1_Zscore_High.png')
 PerformancePlot_Removal(
     vals = {'TMC Shapley': TMC_train1, 'TMC Shapley(scaled by Z-Score)': TMC_Zscore},
     X_train = X_train1, y_train = y_train1, X_test = X_test, y_test = y_test,
-    a = 0.03, b = 0.4, ylim = (78, 85), order = 'ascending', random_iters = 10, save_path = PERF_PLOT_PNG
+    a = 0.03, b = 0.4, ylim = (55, 85), order = 'descending', random_iters = 10, save_path = PERF_PLOT_PNG
 )
 
 'Transformation by Percentage Contribution'
-phi = sum(abs(TMC_train1))
+phi = sum(TMC_train1)
 TMC_Per = TMC_train1/phi
 
-PERF_PLOT_PNG = os.path.join(DATA_DIR, 'AIDS1_Per_High1.png')
+PERF_PLOT_PNG = os.path.join(GRAPH_DIR, 'AIDS1_Per_Low.png')
 PerformancePlot_Removal(
     vals = {'TMC Shapley': TMC_train1, 'TMC Shapley(scaled by Percentage)': TMC_Per},
     X_train = X_train1, y_train = y_train1, X_test = X_test, y_test = y_test,
-    a = 0.03, b = 0.4, ylim = (60, 81), order = 'descending', random_iters = 10, save_path = PERF_PLOT_PNG
+    a = 0.03, b = 0.4, ylim = (77, 85), order = 'ascending', random_iters = 10, save_path = PERF_PLOT_PNG
 )
 #, 'TMC Shapley(scaled by Percentage)': TMC_Per
 
@@ -399,8 +399,8 @@ PerformancePlot_Removal(
 
 
 
-
-'Extraction of train sets using columns'
+'''1. Data shapley values of Estimation of 3 Subsets AIDS (Extraction of Features & Rows)'''
+'Subset 4, 5, 6'
 'Read Data'
 AIDS = fetch_ucirepo(id=890)
 X_AIDS = AIDS.data.features
@@ -453,8 +453,7 @@ LOO_AIDS4 = shapley_aids4.vals_loo
 increments_AIDS4 = np.arange(0, len(X_train4)+1, 10)
 rand_AIDS4 = np.random.rand(len(X_train4))
 
-
-### ----- 1. Performance plot (removal based on descending Data Shapley values) ----- ###
+'Performance Plots'
 path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515/Removal_AIDS4_Low_mean(0.01_500).png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_Shap_AIDS4,
@@ -557,3 +556,98 @@ train6_df.to_csv(train6_path, index=False)
 test6_df = pd.DataFrame(X_test6, columns=[f"feature_{i}" for i in range(X_test6.shape[1])])
 test6_df["label"] = y_test6
 test6_df.to_csv(test6_path, index=False)
+
+
+
+''' 3. Exploring Scale/Distribution of Data Shapley Values on Subsets with Different Size'''
+'Read Data'
+AIDS = fetch_ucirepo(id=890)
+X_AIDS = AIDS.data.features
+y_AIDS = AIDS.data.targets
+# class_counts = y_AIDS.value_counts()
+# print(class_counts)
+df = pd.concat([X_AIDS, y_AIDS], axis=1)
+target_col = y_AIDS.columns[0]
+df_class0 = df[df[target_col] == 0]
+df_class1 = df[df[target_col] == 1]
+df_class0_down = df_class0.sample(n=50, random_state=42)
+df_class1_down = df_class1.sample(n=50, random_state=42)
+df_balanced = pd.concat([df_class0_down, df_class1_down]).sample(frac=1, random_state=42).reset_index(drop=True)
+X_balanced = df_balanced.drop(columns=[target_col])
+y_balanced = df_balanced[[target_col]]
+'Data Pre-Processing'
+categorical_cols = ['trt', 'hemo', 'homo', 'drugs', 'oprior', 'z30', 'zprior',
+                    'race', 'gender', 'str2', 'strat', 'symptom', 'treat', 'offtrt']
+X_balanced_encoded = pd.get_dummies(X_balanced, columns=categorical_cols)
+numerical_cols = [col for col in X_balanced.columns if col not in categorical_cols]
+scaler = StandardScaler()
+X_balanced_encoded[numerical_cols] = scaler.fit_transform(X_balanced_encoded[numerical_cols])
+X_train_s = X_balanced_encoded
+y_train_s = y_balanced
+y_train_s = np.array(y_train_s, dtype=np.int64).ravel()
+DATA_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS'
+TEST_CSV = os.path.join(DATA_DIR, 'test.csv')
+df_test = pd.read_csv(TEST_CSV)
+X_test = pd.get_dummies(df_test.drop(columns=['label'])).to_numpy()
+y_test = df_test['label'].to_numpy()
+X_train_s = X_train_s.to_numpy()
+
+
+
+'Data Shapley: train4'
+model = 'logistic'
+problem = 'classification'
+num_test = 215
+directory_aids_s = './temp_aids_s'
+shapley_aids_s = DShap(X_train_s, y_train_s, X_test, y_test, num_test, sources=None,
+                   sample_weight=None, model_family=model, metric='accuracy',
+                   overwrite=True, directory=directory_aids_s, seed=250421,
+                   max_iter=500, tol=1e-20)
+shapley_aids_s.run(save_every=100, err=0.01, g_run=True, loo_run=True)
+TMC_Shap_AIDS_s = shapley_aids_s.vals_tmc
+G_Shap_AIDS_s = shapley_aids_s.vals_g
+LOO_AIDS_s = shapley_aids_s.vals_loo
+increments_AIDS_s = np.arange(0, len(X_train_s)+1, 10)
+rand_AIDS_s = np.random.rand(len(X_train_s))
+
+'Save results'
+train_s_path = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS/train_s.csv"
+train_s_df = pd.DataFrame(X_train_s, columns=[f"feature_{i}" for i in range(X_train_s.shape[1])])
+train_s_df["label"] = y_train_s
+train_s_df["TMC_Shap"] = TMC_Shap_AIDS_s
+train_s_df["G_Shap"] = G_Shap_AIDS_s
+train_s_df["LOO"] = LOO_AIDS_s
+train_s_df.to_csv(train_s_path, index=False)
+
+'Read in Data Shapley Values of train1'
+DATA_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/AIDS'
+GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250526'
+
+TRAIN1_CSV = os.path.join(DATA_DIR, 'train1.csv')
+Train_1 = pd.read_csv(TRAIN1_CSV)
+TMC_train1 = Train_1['TMC_Shap'].values
+G_train1 = Train_1['G_Shap'].values
+LOO_vals = Train_1['LOO'].values
+
+TRAINS_CSV = os.path.join(DATA_DIR, 'train_s.csv')
+Train_s = pd.read_csv(TRAINS_CSV)
+TMC_Shap_AIDS_s = Train_s['TMC_Shap'].values
+
+avg_s = np.mean(TMC_Shap_AIDS_s)
+avg_1 = np.mean(TMC_train1)
+
+x_s = np.arange(len(TMC_Shap_AIDS_s))
+x_1 = np.arange(len(TMC_train1))
+plt.figure(figsize = (10, 6))
+
+plt.stem(x_s, TMC_Shap_AIDS_s, linefmt = 'tab:blue', markerfmt = '', basefmt = '', label = 'Smaller Subset')
+plt.axhline(avg_s, color = 'tab:blue', linestyle = '--', linewidth = 2, label = 'Average TMC Shapley(Smaller)')
+plt.stem(x_1, TMC_train1, linefmt = 'tab:orange', markerfmt = '', basefmt = '', label = 'Larger Subset')
+plt.axhline(avg_1, color = 'tab:orange', linestyle = '--', linewidth = 2, label = 'Average TMC Shapley(Larger)')
+
+plt.xlabel('Training Data Index', fontsize = 14, weight = 'bold')
+plt.ylabel('TMC Shapley Values', fontsize = 14, weight = 'bold')
+plt.grid(True, linestyle = '--', alpha = 0.6)
+plt.legend(fontsize = 12)
+plt.tight_layout()
+plt.savefig(os.path.join(GRAPH_DIR, 'TMC_Comparison1.png'))

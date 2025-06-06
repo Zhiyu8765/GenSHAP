@@ -547,8 +547,8 @@ df = pd.concat([X_mushroom, y_mushroom], axis=1)
 target_col = y_mushroom.columns[0]
 df_class0 = df[df[target_col] == 'e']
 df_class1 = df[df[target_col] == 'p']
-df_class0_down = df_class0.sample(n=1000, random_state=42)
-df_class1_down = df_class1.sample(n=1000, random_state=42)
+df_class0_down = df_class0.sample(n=100, random_state=42)
+df_class1_down = df_class1.sample(n=100, random_state=42)
 df_balanced = pd.concat([df_class0_down, df_class1_down]).sample(frac=1, random_state=42).reset_index(drop=True)
 label = {'e': 0, 'p': 1}
 df_balanced[target_col] = df_balanced[target_col].map(label)
