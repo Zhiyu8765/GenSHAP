@@ -208,13 +208,33 @@ X_train12, X_test12, y_train12, y_test12 = train_test_split(iris_12.drop(columns
                                                             test_size=0.5, stratify=iris_12['target'], random_state=0)
 D_shap12 = DataShapley(X_train12, y_train12, X_test12, y_test12, n_jobs = -1)
 model = LogisticRegression(max_iter = 500).fit(X_train12, y_train12)
-print(model.score(X_test12, y_test12))
+print(model.score(X_test12, y_test12)) # 0.9
 print(pd.Series(y_train12).value_counts())
 print(pd.Series(y_test12).value_counts())
+TestIris_12 = X_test12.copy()
+TestIris_12['target'] = y_test12.values
+TestIris_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TestIris_12', index = False)
 Iris_12 = X_train12.copy()
 Iris_12['target'] = y_train12.values
 Iris_12['TrueDShap'] = D_shap12
 Iris_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_12', index = False)
+
+##Calculation of TMC Shapley values
+y_train12 = y_train12.replace({1: 0, 2: 1})
+y_test12 = y_test12.replace({1: 0, 2: 1})
+model = 'logistic'
+problem = 'classification'
+num_test = 20
+directory = './temp'
+shapley_Iris12 = DShap(X_train12.values, y_train12.values, X_test12.values, y_test12.values, num_test, sources = None,
+                   sample_weight = None, model_family = model,metric = 'accuracy',
+                   overwrite = True, directory = directory, seed = 250612,
+                   max_iter = 100, tol = 1e-5)
+shapley_Iris12.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
+Iris_12_TMC = Iris_12.copy()
+Iris_12_TMC['TMC_Shap'] = shapley_Iris12.vals_tmc
+##Export dataset
+Iris_12_TMC.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_12_TMC', index = False)
 
 increments = np.arange(0, len(X_train12)+1, 10)
 rand_age = np.random.rand(len(X_train12))
@@ -769,11 +789,11 @@ MNIST_56.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_56_Low.png'
+path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_56_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST56},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(35, 90), order='ascending', random_iters=10, save_path=path)
+            a=0.01, b=0.5, ylim=(15, 55), order='descending', random_iters=10, save_path=path)
 
 
 '''
