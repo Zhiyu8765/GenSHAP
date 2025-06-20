@@ -1,4 +1,5 @@
 ''' 0. Import Packages '''
+' For Calculation of Ground-Truth Data Shapley Values '
 import pandas as pd
 import numpy as np
 import math
@@ -17,46 +18,47 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from collections import defaultdict
-
 from ast import increment_lineno
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
-'Check Working Directory'
-import sys
-print(sys.executable)
-import os
-os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
-#sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+# ' For Calculation of TMC Data Shapley Values'
+# ### Check Working Directory
+# import sys
+# print(sys.executable)
+# import os
+# os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+# #sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+#
+# ###Package and Environments for TMC_Shapley
+# %load_ext autoreload
+# %autoreload 2
+# import importlib
+# #import shap_utils
+# #importlib.reload(shap_utils)
+# import time
+# import numpy as np
+# import pandas as pd
+# import matplotlib.pyplot as plt
+# import sklearn
+# from Shapley import ShapNN
+# from DShap import DShap
+# from shap_utils import *
+# from ucimlrepo import fetch_ucirepo
+# from sklearn.utils import shuffle
+# from sklearn.utils import resample
+# from sklearn.decomposition import PCA
+# from sklearn.preprocessing import StandardScaler
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.metrics import accuracy_score
+# from sklearn.datasets import load_iris, load_breast_cancer
+# from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import MinMaxScaler
+# from sklearn.neighbors import KNeighborsClassifier
+# from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+# #%matplotlib inline
+# MEM_DIR = './'
 
-'Package and Environments for TMC_Shapley'
-%load_ext autoreload
-%autoreload 2
-import importlib
-#import shap_utils
-#importlib.reload(shap_utils)
-import time
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import sklearn
 
-from Shapley import ShapNN
-from DShap import DShap
-from shap_utils import *
-from ucimlrepo import fetch_ucirepo
-from sklearn.utils import shuffle
-from sklearn.utils import resample
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-#%matplotlib inline
-MEM_DIR = './'
 
 ''' 1. Function to Calculate Data Shapley Values '''
 class TorchLogisticRegression(nn.Module):
@@ -67,7 +69,11 @@ class TorchLogisticRegression(nn.Module):
     def forward(self, x):
         return torch.sigmoid(self.linear(x)).squeeze(1)
 
-def train_torch_lr(X_train, y_train, X_test, y_test, epochs = 100):
+def train_torch_lr(X_train, y_train, X_test, y_test, epochs = 100, seed = None):
+    if seed is not None:
+        torch.manual_seed(0)
+        np.random.seed(0)
+
     X_train = torch.tensor(X_train.values, dtype = torch.float32).to('cuda')
     y_train = torch.tensor(y_train.values, dtype = torch.float32).to('cuda')
     X_test = torch.tensor(X_test.values, dtype = torch.float32).to('cuda')
@@ -105,46 +111,46 @@ def DataShapleyTorch(X, y, X_test, y_test, n_jobs = 1, batch_size = 500):
             for subset_indices in combinations(others, s):
                 subset_jobs.append((s, subset_indices))
 
-            def process_batch(batch):
-                contribs = []
-                for s, subset_indices in batch:
-                    subset = list(subset_indices)
-                    key_s = tuple(sorted(subset))
-                    key_si = tuple(sorted(subset + [i]))
+        def process_batch(batch):
+            contribs = []
+            for s, subset_indices in batch:
+                subset = list(subset_indices)
+                key_s = tuple(sorted(subset))
+                key_si = tuple(sorted(subset + [i]))
 
-                    X_s = X.iloc[subset]
-                    y_s = y.iloc[subset]
-                    X_si = pd.concat([X_s, X.iloc[[i]]], axis = 0)
-                    y_si = pd.concat([y_s, y.iloc[[i]]], axis = 0)
+                X_s = X.iloc[subset]
+                y_s = y.iloc[subset]
+                X_si = pd.concat([X_s, X.iloc[[i]]], axis = 0)
+                y_si = pd.concat([y_s, y.iloc[[i]]], axis = 0)
 
-                    if len(np.unique(y_s)) < 2:
-                        U_s = baseline
-                    else:
-                        U_s = utility_cache.get(key_s)
-                        if U_s is None:
-                            U_s = train_torch_lr(X_s, y_s, X_test, y_test, epochs = 100)
-                            utility_cache[key_s] = U_s
+                if len(np.unique(y_s)) < 2:
+                    U_s = baseline
+                else:
+                    U_s = utility_cache.get(key_s)
+                    if U_s is None:
+                        U_s = train_torch_lr(X_s, y_s, X_test, y_test, epochs = 100, seed = hash(key_s)%(2**32))
+                        utility_cache[key_s] = U_s
 
-                    if len(np.unique(y_s)) < 2:
-                        U_si = baseline
-                    else:
-                        U_si = utility_cache.get(key_si)
-                        if U_si is None:
-                            U_si = train_torch_lr(X_si, y_si, X_test, y_test)
-                            utility_cache[key_si] = U_si
+                if len(np.unique(y_s)) < 2:
+                    U_si = baseline
+                else:
+                    U_si = utility_cache.get(key_si)
+                    if U_si is None:
+                        U_si = train_torch_lr(X_si, y_si, X_test, y_test, seed = hash(key_si)%(2**32))
+                        utility_cache[key_si] = U_si
 
-                    weight = 1/(N * math.comb(N-1, s))
-                    contribs.append(weight * (U_si - U_s))
-                return contribs
+                weight = 1/(N * math.comb(N-1, s))
+                contribs.append(weight * (U_si - U_s))
+            return contribs
 
-            for batch_start in range(0, len(subset_jobs), batch_size):
-                batch = subset_jobs[batch_start: batch_start + batch_size]
-                batch_contribs = process_batch(batch)
-                marginal_sum += sum(batch_contribs)
+        for batch_start in range(0, len(subset_jobs), batch_size):
+            batch = subset_jobs[batch_start: batch_start + batch_size]
+            batch_contribs = process_batch(batch)
+            marginal_sum += sum(batch_contribs)
 
-            DShap[i] = marginal_sum
+        DShap[i] = marginal_sum
 
-        return DShap
+    return DShap
 
 
 
@@ -155,9 +161,9 @@ scaler = StandardScaler()
 X_scaled = pd.DataFrame(scaler.fit_transform(X), columns = X.columns)
 y = pd.Series(iris.target, name='target')
 iris_df = pd.concat([X_scaled, y], axis=1)
-iris_0 = iris_df[iris_df["target"] == 0].sample(n = 50, random_state = 1)
-iris_1 = iris_df[iris_df["target"] == 1].sample(n = 50, random_state = 1)
-iris_2 = iris_df[iris_df["target"] == 2].sample(n = 50, random_state = 1)
+iris_0 = iris_df[iris_df["target"] == 0].sample(n = 15, random_state = 1)
+iris_1 = iris_df[iris_df["target"] == 1].sample(n = 15, random_state = 1)
+iris_2 = iris_df[iris_df["target"] == 2].sample(n = 10, random_state = 1)
 iris_01 = pd.concat([iris_0, iris_1], axis = 0)
 iris_02 = pd.concat([iris_0, iris_2], axis = 0)
 iris_12 = pd.concat([iris_1, iris_2], axis = 0)
@@ -174,17 +180,20 @@ print(pd.Series(y_test01).value_counts())
 Iris_01 = X_train01.copy()
 Iris_01['target'] = y_train01.values
 Iris_01['TrueDShap'] = D_shap01
-Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_01', index = False)
+#Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_01', index = False)
+Iris_01.to_csv('/tmp/pycharm_project_236/Outputs/250618/Trial06/Iris_01_15pts_GPU', index = False)
 
 ' Performance plot (removal based on descending True Data Shapley values) '
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 increments = np.arange(0, len(X_train01)+1, 10)
 rand_age = np.random.rand(len(X_train01))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_Iris01_High.png'
+#path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_Iris01_High.png'
+path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_15pts_High_GPU.png'
+
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap01},
             X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
-            a=0.02, b=0.5, ylim=(80, 105), order='descending', random_iters=10, save_path=path)
+            a=0.02, b=0.5, ylim=(20, 105), order='descending', random_iters=10, save_path=path)
 
 '0&2'
 X_train02, X_test02, y_train02, y_test02 = train_test_split(iris_02.drop(columns = ['target']), iris_02['target'],
@@ -340,7 +349,7 @@ bc_3.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/D
 increments = np.arange(0, len(X_train3)+1, 10)
 rand_age = np.random.rand(len(X_train3))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_bc3_Low.png'
+path = '/Outputs/250612/Removal_bc3_Low.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_3},
             X_train=X_train3.values, y_train=y_train3.values, X_test=X_test3.values, y_test=y_test3.values,
@@ -406,7 +415,7 @@ MNIST_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_01_High.png'
+path = '/Outputs/250612/Removal_MNIST_01_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST01},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -471,7 +480,7 @@ MNIST_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_12_Low.png'
+path = '/Outputs/250612/Removal_MNIST_12_Low.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST12},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -537,7 +546,7 @@ MNIST_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_12_Low.png'
+path = '/Outputs/250612/Removal_MNIST_12_Low.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST12},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -603,7 +612,7 @@ MNIST_23.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_23_High.png'
+path = '/Outputs/250612/Removal_MNIST_23_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST23},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -668,7 +677,7 @@ MNIST_34.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_34_Low.png'
+path = '/Outputs/250612/Removal_MNIST_34_Low.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST34},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -733,7 +742,7 @@ MNIST_45.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_45_High.png'
+path = '/Outputs/250612/Removal_MNIST_45_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST45},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -798,7 +807,7 @@ MNIST_56.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_56_High.png'
+path = '/Outputs/250612/Removal_MNIST_56_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST56},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
@@ -864,7 +873,7 @@ MNIST_67.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Resear
 increments = np.arange(0, len(X_train)+1, 10)
 rand_age = np.random.rand(len(X_train))
 #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_MNIST_67_High.png'
+path = '/Outputs/250612/Removal_MNIST_67_High.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap_MNIST67},
             X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,

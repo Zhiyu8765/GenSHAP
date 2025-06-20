@@ -39,7 +39,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 #%matplotlib inline
-MEM_DIR = './'
+MEM_DIR = '../'
 
 
 

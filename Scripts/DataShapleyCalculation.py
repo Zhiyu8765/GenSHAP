@@ -1,4 +1,5 @@
 ''' 0. Import Packages '''
+' For Calculation of Ground-Truth Data Shapley Values '
 import pandas as pd
 import numpy as np
 import math
@@ -12,46 +13,46 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from collections import defaultdict
-
 from ast import increment_lineno
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
-'Check Working Directory'
-import sys
-print(sys.executable)
-import os
-os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
-#sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+# ' For Calculation of TMC Data Shapley Values'
+# ### Check Working Directory
+# import sys
+# print(sys.executable)
+# import os
+# os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+# #sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+#
+# ### Package and Environments for TMC_Shapley
+# %load_ext autoreload
+# %autoreload 2
+# import importlib
+# #import shap_utils
+# #importlib.reload(shap_utils)
+# import time
+# import numpy as np
+# import pandas as pd
+# import matplotlib.pyplot as plt
+# import sklearn
+# from Shapley import ShapNN
+# from DShap import DShap
+# from shap_utils import *
+# from ucimlrepo import fetch_ucirepo
+# from sklearn.utils import shuffle
+# from sklearn.utils import resample
+# from sklearn.decomposition import PCA
+# from sklearn.preprocessing import StandardScaler
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.metrics import accuracy_score
+# from sklearn.datasets import load_iris, load_breast_cancer
+# from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import MinMaxScaler
+# from sklearn.neighbors import KNeighborsClassifier
+# from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+# #%matplotlib inline
+# MEM_DIR = './'
 
-'Package and Environments for TMC_Shapley'
-%load_ext autoreload
-%autoreload 2
-import importlib
-#import shap_utils
-#importlib.reload(shap_utils)
-import time
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import sklearn
-
-from Shapley import ShapNN
-from DShap import DShap
-from shap_utils import *
-from ucimlrepo import fetch_ucirepo
-from sklearn.utils import shuffle
-from sklearn.utils import resample
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-#%matplotlib inline
-MEM_DIR = './'
 
 ''' 1. Function to Calculate Data Shapley Values '''
 ### Note: Two versions below yield the same results.
@@ -168,17 +169,19 @@ print(pd.Series(y_test01).value_counts())
 Iris_01 = X_train01.copy()
 Iris_01['target'] = y_train01.values
 Iris_01['TrueDShap'] = D_shap01
-Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_01', index = False)
+#Iris_01.to_csv('/tmp/pycharm_project_236/Outputs/250618/Trial06/Iris_01_10pts_CPU.csv', index = False)
+Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250619/Trial01/Iris_01_20pts_CPU', index = False)
 
 ' Performance plot (removal based on descending True Data Shapley values) '
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 increments = np.arange(0, len(X_train01)+1, 10)
 rand_age = np.random.rand(len(X_train01))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_Iris01_High.png'
+path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250619/Trial01/Removal_Iris01_20pts_High_CPU.png'
+#path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_10pts_Low_CPU.png'
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': D_shap01},
             X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
-            a=0.02, b=0.5, ylim=(80, 105), order='descending', random_iters=10, save_path=path)
+            a=0.02, b=0.5, ylim=(20, 105), order='descending', random_iters=10, save_path=path)
 
 '0&2'
 X_train02, X_test02, y_train02, y_test02 = train_test_split(iris_02.drop(columns = ['target']), iris_02['target'],
