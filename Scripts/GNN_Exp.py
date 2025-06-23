@@ -56,10 +56,10 @@ def filp_pe_sign(x, method='l0'):
     return x * sign
 
 def SVD_Transform(A, d=10):
-    U, S, _ = randomized_svd(A, n_components=d, random_state=42)
+    U, S, _ = randomized_svd(A, n_components=d, random_state=42) #change to full svd/torch svd
     X_svd = U * np.sqrt(S)
     X_t = torch.tensor(X_svd, dtype=torch.float)
-    X_t = filp_pe_sign(X_t, method='l1')
+    X_t = filp_pe_sign(X_t, method='l1') # l0 (positive) / sum
     return X_t.numpy()
 
 '''
@@ -71,7 +71,7 @@ def build_graph(X_raw, d = 10, tmc = None, c = 0.25):
     D = pairwise_distances(X_raw, metric='euclidean')
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
-    A = np.maximum(A, A.T)
+    A = np.maximum(A, A.T) #(delete)
     X_svd = SVD_Transform(A, d = d)
 
     N = A.shape[0]
@@ -119,9 +119,11 @@ class GINShap(torch.nn.Module):
                  out_channels=1, heads=2, dropout=0.3):
         super().__init__()
 
+        # 带权重的0阶矩阵 -》 DGL
         def mlp(i, o):
             return Sequential(Linear(i, o), LeakyReLU(), Linear(o, o))
 
+        # 加上skip-connection
         self.conv1 = GINConv(mlp(in_channels, hidden_channels))
         self.conv2 = GINConv(mlp(hidden_channels, hidden_channels))
         self.conv3 = GINConv(mlp(hidden_channels, hidden_channels))
@@ -132,7 +134,7 @@ class GINShap(torch.nn.Module):
             Linear(hidden_channels, hidden_channels), LeakyReLU()
         )
 
-        self.gt1 = TransformerConv(hidden_channels, hidden_channels // heads, heads=heads, edge_dim=1)
+        self.gt1 = TransformerConv(hidden_channels, hidden_channels // heads, heads=heads, edge_dim=1) #用torch的transformerencoder
         self.gt2 = TransformerConv(hidden_channels, hidden_channels // heads, heads=heads, edge_dim=1)
         self.gt3 = TransformerConv(hidden_channels, hidden_channels // heads, heads=heads, edge_dim=1)
 
@@ -145,7 +147,7 @@ class GINShap(torch.nn.Module):
         )
 
     def forward(self, d):
-        x = self.conv1(d.x, d.edge_index)
+        x = self.conv1(d.x, d.edge_index) # 用上边的权重
         x = self.conv2(x, d.edge_index)
         x = self.conv3(x, d.edge_index)
 
@@ -310,8 +312,8 @@ def train(model, dataset_graphs, epochs=200, lr=1e-4):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr) # adamw
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1) # cosine
 
     for ep in range(1, epochs + 1):
         model.train()
@@ -319,7 +321,6 @@ def train(model, dataset_graphs, epochs=200, lr=1e-4):
         per_node_losses = []
 
         for data_list in dataset_graphs:
-            # Use the first data object from the list (they all have the same structure)
             d = data_list[0].to(device)
             phi_hat = model(d).squeeze()
             phi_true = d.tmc.to(device)
@@ -457,18 +458,12 @@ N = len(true_vals)
 indices = np.arange(N)
 width = 0.25
 plt.figure(figsize=(10,6))
-
-# grouped bars
 plt.bar(indices - width, true_vals,  width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
 plt.bar(indices, tmc_vals, width, label='TMC Shapley', color='tab:orange',edgecolor='k', alpha=0.7)
 plt.bar(indices + width, pred_vals, width, label='Predicted Shapley',  color='tab:green', edgecolor='k', alpha=0.7)
-
-# horizontal lines at each mean
 plt.plot(indices, [mean_true]*N, linestyle='--', linewidth=2, label=f'Average True Shapley Values ({mean_true:.3f})',   color='tab:blue')
 plt.plot(indices, [mean_tmc]*N, linestyle='--', linewidth=2, label=f'Average TMC Shapley Values ({mean_tmc:.3f})',     color='tab:orange')
 plt.plot(indices, [mean_pred]*N, linestyle='--', linewidth=2, label=f'Average Predicted Shapley Values ({mean_pred:.3f})',color='tab:green')
-
-# labels & legend
 plt.xlabel('Sample Index', fontsize=12, weight='bold')
 plt.ylabel('Shapley Value', fontsize=12, weight='bold')
 plt.title('Comparison of True, TMC & Predicted Shapley Values', fontsize=14, weight='bold')
@@ -555,8 +550,6 @@ for train in Train_list:
     ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
     ax1.grid(axis='y', linestyle='--', alpha=0.4)
     ax1.legend(fontsize=10)
-
-    # Scatter plot
     ax2.scatter(true_vals, pred_vals, s=80, color='tab:blue', alpha=0.6,
                 edgecolors='k', linewidth=0.5, label='Predicted vs True')
     all_min = min(true_vals.min(), pred_vals.min())
@@ -568,11 +561,9 @@ for train in Train_list:
     ax2.grid(True, linestyle='--', alpha=0.4)
     ax2.legend(fontsize=10)
 
-    # Final layout
     fig.suptitle(f'Shapley Comparison: {os.path.basename(train)}', fontsize=15, weight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # leave space for suptitle
 
-    # Save and show
     out_name = os.path.basename(train).replace('.csv', '') + '_ShapleyCompare.png'
     out_path = os.path.join(GRAPH_DIR, out_name)
     plt.savefig(out_path, dpi=300)

@@ -1,3 +1,4 @@
+''' 250619 Experiment '''
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -22,3 +23,41 @@ for file, label in zip(files, labels):
     plt.title(f'Distribution of TrueDShap ({label})')
     plt.tight_layout()
     plt.show()
+
+
+''' 250620 Experiment '''
+from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.utils.extmath import randomized_svd
+import numpy as np
+df = pd.read_csv('/tmp/pycharm_project_236/Outputs/250619/Trial01/Iris_01_5pts_CPU')
+X_raw = pd.get_dummies(df.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+D = pairwise_distances(X_raw, metric='euclidean')
+sigma = np.mean(D)
+A = np.exp(-(D ** 2) / (2 * (0.25 * sigma) ** 2))
+A = np.maximum(A, A.T)
+U, S, _ = randomized_svd(A, n_components = 3, random_state=42)
+X_svd = U * np.sqrt(S)
+X_svd_re = U@np.diagflat(S**0.5)
+
+df2 = pd.read_csv('/tmp/pycharm_project_236/Outputs/250619/Trial01/Iris_01_10pts_CPU')
+X_raw2 = pd.get_dummies(df2.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+D2 = pairwise_distances(X_raw2, metric='euclidean')
+sigma2 = np.mean(D2)
+A2 = np.exp(-(D2 ** 2) / (2 * (0.25 * sigma2) ** 2))
+A2 = np.maximum(A2, A2.T)
+U2, S2, _ = randomized_svd(A2, n_components = 10, random_state=42)
+X_svd4 = U2 * np.sqrt(S2)
+X_t4 = torch.tensor(X_svd4, dtype=torch.float)
+X_t4 = filp_pe_sign(X_t4, method='l1')
+
+
+df3 = pd.read_csv('/tmp/pycharm_project_236/Datasets/bc_1')
+X_raw3 = pd.get_dummies(df3.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+D3 = pairwise_distances(X_raw3, metric='euclidean')
+sigma3 = np.mean(D3)
+A3 = np.exp(-(D3 ** 2) / (2 * (0.25 * sigma3) ** 2))
+A3 = np.maximum(A3, A3.T)
+U3, S3, _ = randomized_svd(A3, n_components = 10, random_state=42)
+X_svd3 = U3 * np.sqrt(S3)
+X_t3 = torch.tensor(X_svd3, dtype=torch.float)
+X_t3 = filp_pe_sign(X_t3, method='l1')
