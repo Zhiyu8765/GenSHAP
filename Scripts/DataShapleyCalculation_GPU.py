@@ -20,6 +20,8 @@ from joblib import Parallel, delayed
 from collections import defaultdict
 from ast import increment_lineno
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 # ' For Calculation of TMC Data Shapley Values'
 # ### Check Working Directory
@@ -74,12 +76,12 @@ def train_torch_lr(X_train, y_train, X_test, y_test, epochs = 100, seed = None):
         torch.manual_seed(0)
         np.random.seed(0)
 
-    X_train = torch.tensor(X_train.values, dtype = torch.float32).to('cuda')
-    y_train = torch.tensor(y_train.values, dtype = torch.float32).to('cuda')
-    X_test = torch.tensor(X_test.values, dtype = torch.float32).to('cuda')
-    y_test = torch.tensor(y_test.values, dtype = torch.float32).to('cuda')
+    X_train = torch.tensor(X_train.values, dtype = torch.float32).to(device)
+    y_train = torch.tensor(y_train.values, dtype = torch.float32).to(device)
+    X_test = torch.tensor(X_test.values, dtype = torch.float32).to(device)
+    y_test = torch.tensor(y_test.values, dtype = torch.float32).to(device)
 
-    model = TorchLogisticRegression(X_train.shape[1]).to('cuda')
+    model = TorchLogisticRegression(X_train.shape[1]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
     for _ in range(epochs):

@@ -1,6 +1,10 @@
 ''' 250619 Experiment '''
 import matplotlib.pyplot as plt
 import pandas as pd
+from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.utils.extmath import randomized_svd
+import numpy as np
+
 
 # File paths
 files = [
@@ -26,9 +30,6 @@ for file, label in zip(files, labels):
 
 
 ''' 250620 Experiment '''
-from sklearn.metrics.pairwise import pairwise_distances
-from sklearn.utils.extmath import randomized_svd
-import numpy as np
 df = pd.read_csv('/tmp/pycharm_project_236/Outputs/250619/Trial01/Iris_01_5pts_CPU')
 X_raw = pd.get_dummies(df.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
 D = pairwise_distances(X_raw, metric='euclidean')
@@ -61,3 +62,9 @@ U3, S3, _ = randomized_svd(A3, n_components = 10, random_state=42)
 X_svd3 = U3 * np.sqrt(S3)
 X_t3 = torch.tensor(X_svd3, dtype=torch.float)
 X_t3 = filp_pe_sign(X_t3, method='l1')
+
+FILE_PATH = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_large'
+df = pd.read_csv(FILE_PATH)
+df['TrueDShap'] = ''
+df.to_csv(FILE_PATH, index=False)
+print(f"Added empty 'TrueDShap' column and saved back to {FILE_PATH}")
