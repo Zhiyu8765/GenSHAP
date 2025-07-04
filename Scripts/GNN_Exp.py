@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import dgl
 from dgl.nn.pytorch.conv import GINConv
+from mpmath.calculus.extrapolation import standardize
 from torch_geometric.data import Data
 from torch.nn import (Sequential, Linear, LeakyReLU, Dropout,
                       TransformerEncoder, TransformerEncoderLayer)
@@ -64,8 +65,9 @@ def SVD_Transform(A, d=10):
     U, S, _ = randomized_svd(A, n_components=d, random_state=42) #change to full svd/torch svd
     X_svd = U * np.sqrt(S)
     X_t = torch.tensor(X_svd, dtype=torch.float)
-    X_t = filp_pe_sign(X_t, method='pos') # l0 (positive) / sum
+    X_t = filp_pe_sign(X_t, method='sum') # l0 (positive) / sum
     return X_t.numpy()
+
 
 '''
 2. Graph Construction
@@ -96,6 +98,7 @@ def build_graph(X_raw, phi, total_util, c, d = 10):
 
     return data
 
+
 '''
 3. Data Preprocessing
 '''
@@ -116,12 +119,13 @@ def load_and_preprocess(train_csv, test_csv, d=10):
 
     return data_list
 
+
 '''
 4. Model Construction
 '''
 ''' Version A. Without BatchNorm '''
 class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2, dropout = 0.3):
+    def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2):
         super().__init__()
         def mlp(i, o):
             return Sequential(Linear(i, o), LeakyReLU(), Linear(o, o))
@@ -140,14 +144,14 @@ class GINShap(torch.nn.Module):
         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
 
         # GT (via TransformerEncoder)
-        d_concat = hidden_channels * len(C_List) # 128 * 5 = 640
+        d_concat = hidden_channels * len(C_List) # 64 or 128 * 5 = 640
         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.1, batch_first = True)
         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 
         # Z
         self.Z = Sequential(Linear(d_concat, hidden_channels), LeakyReLU())
 
-        # MLP
+        # MLP (widen by hidden_channels * 2)
         self.out = Sequential(
             Linear(hidden_channels + 2, hidden_channels * 2),
             LeakyReLU(),
@@ -158,42 +162,42 @@ class GINShap(torch.nn.Module):
 
     def forward(self, data_list):
         data = data_list[0].to(device)
-        x0 = data.x
-        ei = data.edge_index
-        ew= data.edge_attr.view(-1)
+        x0 = data.x # Extract nodes
+        ei = data.edge_index # Extract edge indices
+        ew = data.edge_attr.view(-1) # Extract edge weights for DGL
 
         # DGL Graph
         g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
         g.edata['w'] = ew
 
         # Parallel GIN
-        xs = []
+        output_GIN = []
         for convs, gdata in zip(self.branches, data_list):
-            h = gdata.x.to(device)
+            node_input = gdata.x.to(device)
             for conv in convs:
-                h = conv(g, h , edge_weight = g.edata['w'])
-            xs.append(h)
-        h = torch.cat(xs, dim = 1)
+                node_input = conv(g, node_input , edge_weight = g.edata['w'])
+            output_GIN.append(node_input)
+        output_GIN = torch.cat(output_GIN, dim = 1)
 
         # Skip-Connection
-        h = h + self.skip_lin(x0)
+        output_skip = output_GIN + self.skip_lin(x0)
 
         # GT
-        h = h.unsqueeze(0)
-        h = self.gt(h)
-        h = h.squeeze(0)
+        output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*5)
+        output_gt = self.gt(output_skip)
+        output_gt = output_gt.squeeze(0)
 
         # H
-        h = self.Z(h)
+        output_h = self.Z(output_gt)
 
         # total utility + (N/1000) -> MLP
-        N = h.size(0)
+        N = output_h.size(0)
         total_util = data.total_util
-        tu_feat = total_util.expand(N, 1)
-        n_feat = torch.full((N, 1), N/1000., device = device)
-        h = torch.cat([h, tu_feat, n_feat], dim = 1)
+        utility_vec = total_util.expand(N, 1)
+        NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
+        output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
 
-        return self.out(h)
+        return self.out(output_final)
 
 
 '''
@@ -211,17 +215,26 @@ class GINShap(torch.nn.Module):
 #     diffs = phi_hat[idx_i] - phi_hat[idx_j]
 #     return F.softplus(-S * diffs).mean()
 
-def pairwise_rank_loss(phi_hat, phi_true, margin = 0):
-    N = phi_hat.size(0)
-    idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
-    y = torch.sign(phi_true[idx_i] - phi_true[idx_j])
-    return F.margin_ranking_loss(phi_hat[idx_i], phi_hat[idx_j], y, margin = margin)
+# def pairwise_rank_loss(phi_hat, phi_true, margin = 0):
+#     N = phi_hat.size(0)
+#     idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
+#     y = torch.sign(phi_true[idx_i] - phi_true[idx_j])
+#     return F.margin_ranking_loss(phi_hat[idx_i], phi_hat[idx_j], y, margin = margin)
 
-def train(model, dataset_graphs, epochs=200, lr=1e-4, alpha = 0.5):
+# def BPR_loss(phi_hat, phi_true):
+#     N = phi_true.size(0)
+#     idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
+#     mask = (phi_true[idx_i] > phi_true[idx_j])
+#     pos_i = idx_i[mask]
+#     neg_j = idx_j[mask]
+#     return -F.logsigmoid(phi_hat[pos_i] - phi_hat[neg_j]).mean()
+
+def train(model, dataset_graphs, epochs=200, lr=1e-4, alpha = 0.2):
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr) # adamw
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = epochs) # cosine
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = epochs) # cosine
+    loss_history = []
 
     for ep in range(1, epochs + 1):
         model.train()
@@ -230,22 +243,38 @@ def train(model, dataset_graphs, epochs=200, lr=1e-4, alpha = 0.5):
         for data_list in dataset_graphs:
             phi_hat = model(data_list).view(-1)
             phi_true = data_list[0].tmc.to(device)
-            loss_MSE = F.l1_loss(phi_hat, phi_true)
-            loss_Rank = pairwise_rank_loss(phi_hat, phi_true, margin = 0)
-            loss = (1-alpha) * loss_MSE + alpha * loss_Rank
-            losses.append(loss)
-        L = torch.stack(losses).sum()
 
-        optimizer.zero_grad(); L.backward(); optimizer.step()
-        scheduler.step()
+            mean_true = phi_true.mean()
+            std_true = phi_true.std(unbiased=False) + 1e-10
+            phi_true_scaled = (phi_true - mean_true) / std_true
+
+            mean_hat = phi_hat.mean()
+            std_hat = phi_hat.std(unbiased=False) + 1e-10
+            phi_hat_scaled = (phi_hat - mean_hat) / std_hat
+
+            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction = 'mean')
+            #loss_Rank = BPR_loss(phi_hat_scaled, phi_true_scaled)
+            #loss = (1-alpha) * loss_MSE + alpha * loss_Rank
+            loss = loss_MSE
+            losses.append(loss)
+        L = torch.stack(losses).mean()
+        loss_history.append(L.item())
+
+        optimizer.zero_grad()
+        L.backward()
+        optimizer.step()
+        #scheduler.step()
 
         if ep % 5 == 0:
-            current_lr = scheduler.get_last_lr()[0]
-            #current_lr = optimizer.param_groups[0]['lr']
-            print(f'Epoch {ep:3d} | total loss {L:.4f}| LR: {current_lr:.2e}')
+            #current_lr = scheduler.get_last_lr()[0]
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {ep:3d} | total loss {L:.8f}| LR: {current_lr:.2e}')
+
+    return loss_history
+
 
 '''
-8. Prediction
+6. Prediction
 '''
 def predict(model, data_list):
     model.eval()
@@ -264,41 +293,139 @@ EXP 1. Iris (Subsets of label 1 & 2 for testing)
 
 'A. Implementation'
 if __name__ == '__main__':
-    BASE = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2'
+    BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2'
+    BASE01 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group01'
+    BASE02 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group03'
+    BASE03 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04'
+    BASEBC = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05'
     #BASE = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2'
-    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250625/Trial04'
+    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09'
     #PATH_OUT = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
+    # Train_list = [
+    #     (f'{BASE01}/Iris_01_1'),(f'{BASE01}/Iris_01_2'),
+    #     (f'{BASE01}/Iris_01_3'),(f'{BASE01}/Iris_01_4'),
+    #     (f'{BASE01}/Iris_01_5'),(f'{BASE01}/Iris_01_6'),
+    #     (f'{BASE01}/Iris_01_7'),(f'{BASE01}/Iris_01_8'),
+    #     (f'{BASE01}/Iris_01_9'),(f'{BASE01}/Iris_01_10'),
+    #     (f'{BASE01}/Iris_01_11'),(f'{BASE01}/Iris_01_12'),
+    #     (f'{BASE01}/Iris_01_13'),(f'{BASE01}/Iris_01_14'),
+    #     (f'{BASE01}/Iris_01_15'),(f'{BASE01}/Iris_01_16'),
+    #     (f'{BASE01}/Iris_01_17'), (f'{BASE01}/Iris_01_18'),
+    #     (f'{BASE01}/Iris_01_19'), (f'{BASE01}/Iris_01_20'),
+    #     (f'{BASE01}/Iris_01_21'), (f'{BASE01}/Iris_01_22'),
+    #     (f'{BASE01}/Iris_01_23'), (f'{BASE01}/Iris_01_24'),
+    #     (f'{BASE01}/Iris_01_25'), (f'{BASE01}/Iris_01_26'),
+    #     (f'{BASE01}/Iris_01_27'), (f'{BASE01}/Iris_01_28'),
+    #     (f'{BASE01}/Iris_01_29'), (f'{BASE01}/Iris_01_30'),
+    #     (f'{BASE02}/Iris_02_1'), (f'{BASE02}/Iris_02_2'),
+    #     (f'{BASE02}/Iris_02_3'), (f'{BASE02}/Iris_02_4'),
+    #     (f'{BASE02}/Iris_02_5'), (f'{BASE02}/Iris_02_6'),
+    #     (f'{BASE02}/Iris_02_7'), (f'{BASE02}/Iris_02_8'),
+    #     (f'{BASE02}/Iris_02_9'), (f'{BASE02}/Iris_02_10'),
+    #     (f'{BASE02}/Iris_02_11'), (f'{BASE02}/Iris_02_12'),
+    #     (f'{BASE02}/Iris_02_13'), (f'{BASE02}/Iris_02_14'),
+    #     (f'{BASE02}/Iris_02_15'), (f'{BASE02}/Iris_02_16'),
+    #     (f'{BASE02}/Iris_02_17'), (f'{BASE02}/Iris_02_18'),
+    #     (f'{BASE02}/Iris_02_19'), (f'{BASE02}/Iris_02_20')
+    # ]
+    # Train_list = [
+    #     (f'{BASE00}/Iris_01'),
+    #     (f'{BASE00}/Iris_02'),
+    #     (f'{BASE00}/bc_1'),
+    #     (f'{BASE00}/bc_2'),
+    #     (f'{BASE00}/bc_3'),
+    #     (f'{BASE00}/MNIST_01'),
+    #     (f'{BASE00}/MNIST_12'),
+    #     (f'{BASE00}/MNIST_23'),
+    #     (f'{BASE00}/MNIST_34'),
+    #     (f'{BASE00}/MNIST_45'),
+    #     (f'{BASE00}/MNIST_56'),
+    #     (f'{BASE00}/MNIST_67')
+    # ]
     Train_list = [
-        (f'{BASE}/Iris_01'),
-        (f'{BASE}/Iris_02'),
-        (f'{BASE}/bc_1'),
-        (f'{BASE}/bc_2'),
-        (f'{BASE}/bc_3'),
-        (f'{BASE}/MNIST_01'),
-        (f'{BASE}/MNIST_12'),
-        (f'{BASE}/MNIST_23'),
-        (f'{BASE}/MNIST_34'),
-        (f'{BASE}/MNIST_45'),
-        (f'{BASE}/MNIST_56'),
-        (f'{BASE}/MNIST_67')
+        (f'{BASEBC}/bc_1.csv'), (f'{BASEBC}/bc_2.csv'),
+        (f'{BASEBC}/bc_3.csv'), (f'{BASEBC}/bc_4.csv'),
+        (f'{BASEBC}/bc_5.csv'), (f'{BASEBC}/bc_6.csv'),
+        (f'{BASEBC}/bc_7.csv'), (f'{BASEBC}/bc_8.csv'),
+        (f'{BASEBC}/bc_9.csv'), (f'{BASEBC}/bc_10.csv'),
+        (f'{BASEBC}/bc_11.csv'), (f'{BASEBC}/bc_12.csv'),
+        (f'{BASEBC}/bc_13.csv'), (f'{BASEBC}/bc_14.csv'),
+        (f'{BASEBC}/bc_15.csv'), (f'{BASEBC}/bc_16.csv'),
+        (f'{BASEBC}/bc_17.csv'), (f'{BASEBC}/bc_18.csv'),
+        (f'{BASEBC}/bc_19.csv'), (f'{BASEBC}/bc_20.csv'),
+        (f'{BASEBC}/bc_21.csv'), (f'{BASEBC}/bc_22.csv'),
+        (f'{BASEBC}/bc_23.csv'), (f'{BASEBC}/bc_24.csv'),
+        (f'{BASEBC}/bc_25.csv'), (f'{BASEBC}/bc_26.csv'),
+        (f'{BASEBC}/bc_27.csv'), (f'{BASEBC}/bc_28.csv'),
+        (f'{BASEBC}/bc_29.csv'), (f'{BASEBC}/bc_30.csv')
     ]
 
+    # Test_list = [
+    #     (f'{BASE01}/Iris_01_test_1'),(f'{BASE01}/Iris_01_test_2'),
+    #     (f'{BASE01}/Iris_01_test_3'),(f'{BASE01}/Iris_01_test_4'),
+    #     (f'{BASE01}/Iris_01_test_5'),(f'{BASE01}/Iris_01_test_6'),
+    #     (f'{BASE01}/Iris_01_test_7'),(f'{BASE01}/Iris_01_test_8'),
+    #     (f'{BASE01}/Iris_01_test_9'),(f'{BASE01}/Iris_01_test_10'),
+    #     (f'{BASE01}/Iris_01_test_11'),(f'{BASE01}/Iris_01_test_12'),
+    #     (f'{BASE01}/Iris_01_test_13'),(f'{BASE01}/Iris_01_test_14'),
+    #     (f'{BASE01}/Iris_01_test_15'),(f'{BASE01}/Iris_01_test_16'),
+    #     (f'{BASE01}/Iris_01_test_17'), (f'{BASE01}/Iris_01_test_18'),
+    #     (f'{BASE01}/Iris_01_test_19'), (f'{BASE01}/Iris_01_test_20'),
+    #     (f'{BASE01}/Iris_01_test_21'), (f'{BASE01}/Iris_01_test_22'),
+    #     (f'{BASE01}/Iris_01_test_23'), (f'{BASE01}/Iris_01_test_24'),
+    #     (f'{BASE01}/Iris_01_test_25'), (f'{BASE01}/Iris_01_test_26'),
+    #     (f'{BASE01}/Iris_01_test_27'), (f'{BASE01}/Iris_01_test_28'),
+    #     (f'{BASE01}/Iris_01_test_29'), (f'{BASE01}/Iris_01_test_30'),
+    #     (f'{BASE02}/Iris_02_test_1'), (f'{BASE02}/Iris_02_test_2'),
+    #     (f'{BASE02}/Iris_02_test_3'), (f'{BASE02}/Iris_02_test_4'),
+    #     (f'{BASE02}/Iris_02_test_5'), (f'{BASE02}/Iris_02_test_6'),
+    #     (f'{BASE02}/Iris_02_test_7'), (f'{BASE02}/Iris_02_test_8'),
+    #     (f'{BASE02}/Iris_02_test_9'), (f'{BASE02}/Iris_02_test_10'),
+    #     (f'{BASE02}/Iris_02_test_11'), (f'{BASE02}/Iris_02_test_12'),
+    #     (f'{BASE02}/Iris_02_test_13'), (f'{BASE02}/Iris_02_test_14'),
+    #     (f'{BASE02}/Iris_02_test_15'), (f'{BASE02}/Iris_02_test_16'),
+    #     (f'{BASE02}/Iris_02_test_17'), (f'{BASE02}/Iris_02_test_18'),
+    #     (f'{BASE02}/Iris_02_test_19'), (f'{BASE02}/Iris_02_test_20')
+    # ]
+
+    # Test_list = [
+    #     (f'{BASE00}/Iris_01_test'),
+    #     (f'{BASE00}/Iris_02_test'),
+    #     (f'{BASE00}/bc_1_test'),
+    #     (f'{BASE00}/bc_2_test'),
+    #     (f'{BASE00}/bc_3_test'),
+    #     (f'{BASE00}/MNIST_01_test'),
+    #     (f'{BASE00}/MNIST_12_test'),
+    #     (f'{BASE00}/MNIST_23_test'),
+    #     (f'{BASE00}/MNIST_34_test'),
+    #     (f'{BASE00}/MNIST_45_test'),
+    #     (f'{BASE00}/MNIST_56_test'),
+    #     (f'{BASE00}/MNIST_67_test')
+    # ]
+
     Test_list = [
-        (f'{BASE}/Iris_01_test'),
-        (f'{BASE}/Iris_02_test'),
-        (f'{BASE}/bc_1_test'),
-        (f'{BASE}/bc_2_test'),
-        (f'{BASE}/bc_3_test'),
-        (f'{BASE}/MNIST_01_test'),
-        (f'{BASE}/MNIST_12_test'),
-        (f'{BASE}/MNIST_23_test'),
-        (f'{BASE}/MNIST_34_test'),
-        (f'{BASE}/MNIST_45_test'),
-        (f'{BASE}/MNIST_56_test'),
-        (f'{BASE}/MNIST_67_test')
+        (f'{BASEBC}/bc_1_test.csv'), (f'{BASEBC}/bc_2_test.csv'),
+        (f'{BASEBC}/bc_3_test.csv'), (f'{BASEBC}/bc_4_test.csv'),
+        (f'{BASEBC}/bc_5_test.csv'), (f'{BASEBC}/bc_6_test.csv'),
+        (f'{BASEBC}/bc_7_test.csv'), (f'{BASEBC}/bc_8_test.csv'),
+        (f'{BASEBC}/bc_9_test.csv'), (f'{BASEBC}/bc_10_test.csv'),
+        (f'{BASEBC}/bc_11_test.csv'), (f'{BASEBC}/bc_12_test.csv'),
+        (f'{BASEBC}/bc_13_test.csv'), (f'{BASEBC}/bc_14_test.csv'),
+        (f'{BASEBC}/bc_15_test.csv'), (f'{BASEBC}/bc_16_test.csv'),
+        (f'{BASEBC}/bc_17_test.csv'), (f'{BASEBC}/bc_18_test.csv'),
+        (f'{BASEBC}/bc_19_test.csv'), (f'{BASEBC}/bc_20_test.csv'),
+        (f'{BASEBC}/bc_21_test.csv'), (f'{BASEBC}/bc_22_test.csv'),
+        (f'{BASEBC}/bc_23_test.csv'), (f'{BASEBC}/bc_24_test.csv'),
+        (f'{BASEBC}/bc_25_test.csv'), (f'{BASEBC}/bc_26_test.csv'),
+        (f'{BASEBC}/bc_27_test.csv'), (f'{BASEBC}/bc_28_test.csv'),
+        (f'{BASEBC}/bc_29_test.csv'), (f'{BASEBC}/bc_30_test.csv')
     ]
-    holdout_train_csv = f'{BASE}/Iris_12'
-    holdout_test_csv = f'{BASE}/Iris_12_test'
+    # holdout_train_csv = f'{BASE03}/Iris_12_2'
+    # holdout_test_csv = f'{BASE03}/Iris_12_test_2'
+    # holdout_train_csv = f'{BASE00}/Iris_12'
+    # holdout_test_csv = f'{BASE00}/Iris_12_test'
+    holdout_train_csv = f'{BASEBC}/bc_31.csv'
+    holdout_test_csv = f'{BASEBC}/bc_31_test.csv'
 
     data_list = [
         load_and_preprocess(train_csv, test_csv)
@@ -309,8 +436,19 @@ if __name__ == '__main__':
     # all_phi_scaled = torch.cat([d.tmc.view(-1) for d in data_list], dim = 0)
     # bias_init = float(all_phi_scaled.mean().item())
 
-    gnn = GINShap(in_channels = 10, hidden_channels = 128, heads = 4, dropout = 0.3)
-    train(gnn, data_list, epochs = 300, lr = 1e-4, alpha = 0.5)
+    gnn = GINShap(in_channels = 10, hidden_channels = 256, heads = 32)
+    loss_history = train(gnn, data_list, epochs = 200, lr = 1e-4, alpha = 0.5)
+
+    plt.figure(figsize = (6, 4))
+    plt.plot(loss_history, label = 'Training Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Optimisation Curve')
+    plt.legend()
+    plt.grid(True)
+    plt_path = os.path.join(PATH_OUT, 'Optimisation_Curve.png')
+    plt.savefig(plt_path)
+    print('Optimisation Curve Saved.')
 
     preds = predict(gnn, data_holdout)
     print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
@@ -335,11 +473,15 @@ if __name__ == '__main__':
 
 
 'Removal Plots'
-df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test')
+#df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_test_2')
+#df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test')
 #df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2/Iris_12_test')
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05/bc_31_test.csv')
 X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
 y_test = df_test['target'].to_numpy()
-df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
+#df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_TMC_2')
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05/bc_31_TMC.csv')
+#df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
 #df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2/Iris_12_TMC')
 X_train = pd.get_dummies(df_train.drop(
                 columns=['target','TrueDShap','TMC_Shap'])).to_numpy()
@@ -347,7 +489,7 @@ y_train = df_train['target'].to_numpy()
 True_Shap = df_train['TrueDShap'].to_numpy()
 TMC_Shap = df_train['TMC_Shap'].to_numpy()
 Pred_Shap = preds
-PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250625/Trial04', 'Iris12Pred_High.png')
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09', 'bc31_Pred_High.png')
 #PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250623/Trial01', 'Iris12Pred_Low.png')
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
@@ -363,7 +505,7 @@ removal_percentages, results = PerformancePlot_Removal(
 
 
 'Distribution/Magnitude Comparison'
-GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250625/Trial04'
+GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09'
 #GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
 true_vals = np.asarray(True_Shap)
 tmc_vals  = np.asarray(TMC_Shap)
@@ -423,22 +565,68 @@ plt.show()
 
 
 'Check Train Sets'
-BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250625/Trial03'
+BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09'
 #BASE2 = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
+# Train_list = [
+#             (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_01_2_Pred.csv'),
+#             (f'{BASE2}/Iris_01_3_Pred.csv'), (f'{BASE2}/Iris_01_4_Pred.csv'),
+#             (f'{BASE2}/Iris_01_5_Pred.csv'), (f'{BASE2}/Iris_01_6_Pred.csv'),
+#             (f'{BASE2}/Iris_01_7_Pred.csv'), (f'{BASE2}/Iris_01_8_Pred.csv'),
+#             (f'{BASE2}/Iris_01_9_Pred.csv'), (f'{BASE2}/Iris_01_10_Pred.csv'),
+#             (f'{BASE2}/Iris_01_11_Pred.csv'), (f'{BASE2}/Iris_01_12_Pred.csv'),
+#             (f'{BASE2}/Iris_01_13_Pred.csv'), (f'{BASE2}/Iris_01_14_Pred.csv'),
+#             (f'{BASE2}/Iris_01_15_Pred.csv'), (f'{BASE2}/Iris_01_16_Pred.csv'),
+#             (f'{BASE2}/Iris_01_17_Pred.csv'), (f'{BASE2}/Iris_01_18_Pred.csv'),
+#             (f'{BASE2}/Iris_01_19_Pred.csv'), (f'{BASE2}/Iris_01_20_Pred.csv'),
+#             (f'{BASE2}/Iris_01_21_Pred.csv'), (f'{BASE2}/Iris_01_22_Pred.csv'),
+#             (f'{BASE2}/Iris_01_23_Pred.csv'), (f'{BASE2}/Iris_01_24_Pred.csv'),
+#             (f'{BASE2}/Iris_01_25_Pred.csv'), (f'{BASE2}/Iris_01_26_Pred.csv'),
+#             (f'{BASE2}/Iris_01_27_Pred.csv'), (f'{BASE2}/Iris_01_28_Pred.csv'),
+#             (f'{BASE2}/Iris_01_29_Pred.csv'), (f'{BASE2}/Iris_01_30_Pred.csv'),
+#             (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/Iris_02_2_Pred.csv'),
+#             (f'{BASE2}/Iris_02_3_Pred.csv'), (f'{BASE2}/Iris_02_4_Pred.csv'),
+#             (f'{BASE2}/Iris_02_5_Pred.csv'), (f'{BASE2}/Iris_02_6_Pred.csv'),
+#             (f'{BASE2}/Iris_02_7_Pred.csv'), (f'{BASE2}/Iris_02_8_Pred.csv'),
+#             (f'{BASE2}/Iris_02_9_Pred.csv'), (f'{BASE2}/Iris_02_10_Pred.csv'),
+#             (f'{BASE2}/Iris_02_11_Pred.csv'), (f'{BASE2}/Iris_02_12_Pred.csv'),
+#             (f'{BASE2}/Iris_02_13_Pred.csv'), (f'{BASE2}/Iris_02_14_Pred.csv'),
+#             (f'{BASE2}/Iris_02_15_Pred.csv'), (f'{BASE2}/Iris_02_16_Pred.csv'),
+#             (f'{BASE2}/Iris_02_17_Pred.csv'), (f'{BASE2}/Iris_02_18_Pred.csv'),
+#             (f'{BASE2}/Iris_02_19_Pred.csv'), (f'{BASE2}/Iris_02_20_Pred.csv')
+# ]
 Train_list = [
-        (f'{BASE2}/Iris_01_Pred.csv'),
-        (f'{BASE2}/Iris_02_Pred.csv'),
-        (f'{BASE2}/bc_1_Pred.csv'),
-        (f'{BASE2}/bc_2_Pred.csv'),
-        (f'{BASE2}/bc_3_Pred.csv'),
-        (f'{BASE2}/MNIST_01_Pred.csv'),
-        (f'{BASE2}/MNIST_12_Pred.csv'),
-        (f'{BASE2}/MNIST_23_Pred.csv'),
-        (f'{BASE2}/MNIST_34_Pred.csv'),
-        (f'{BASE2}/MNIST_45_Pred.csv'),
-        (f'{BASE2}/MNIST_56_Pred.csv'),
-        (f'{BASE2}/MNIST_67_Pred.csv')
-    ]
+    (f'{BASE2}/bc_1.csv_Pred.csv'), (f'{BASE2}/bc_2.csv_Pred.csv'),
+    (f'{BASE2}/bc_3.csv_Pred.csv'), (f'{BASE2}/bc_4.csv_Pred.csv'),
+    (f'{BASE2}/bc_5.csv_Pred.csv'), (f'{BASE2}/bc_6.csv_Pred.csv'),
+    (f'{BASE2}/bc_7.csv_Pred.csv'), (f'{BASE2}/bc_8.csv_Pred.csv'),
+    (f'{BASE2}/bc_9.csv_Pred.csv'), (f'{BASE2}/bc_10.csv_Pred.csv'),
+    (f'{BASE2}/bc_11.csv_Pred.csv'), (f'{BASE2}/bc_12.csv_Pred.csv'),
+    (f'{BASE2}/bc_13.csv_Pred.csv'), (f'{BASE2}/bc_14.csv_Pred.csv'),
+    (f'{BASE2}/bc_15.csv_Pred.csv'), (f'{BASE2}/bc_16.csv_Pred.csv'),
+    (f'{BASE2}/bc_17.csv_Pred.csv'), (f'{BASE2}/bc_18.csv_Pred.csv'),
+    (f'{BASE2}/bc_19.csv_Pred.csv'), (f'{BASE2}/bc_20.csv_Pred.csv'),
+    (f'{BASE2}/bc_21.csv_Pred.csv'), (f'{BASE2}/bc_22.csv_Pred.csv'),
+    (f'{BASE2}/bc_23.csv_Pred.csv'), (f'{BASE2}/bc_24.csv_Pred.csv'),
+    (f'{BASE2}/bc_25.csv_Pred.csv'), (f'{BASE2}/bc_26.csv_Pred.csv'),
+    (f'{BASE2}/bc_27.csv_Pred.csv'), (f'{BASE2}/bc_28.csv_Pred.csv'),
+    (f'{BASE2}/bc_29.csv_Pred.csv'), (f'{BASE2}/bc_30.csv_Pred.csv')
+
+]
+# Train_list = [
+#             (f'{BASE2}/Iris_01_Pred.csv'),
+#             (f'{BASE2}/Iris_02_Pred.csv'),
+#             (f'{BASE2}/bc_1_Pred.csv'),
+#             (f'{BASE2}/bc_2_Pred.csv'),
+#             (f'{BASE2}/bc_3_Pred.csv'),
+#             (f'{BASE2}/MNIST_01_Pred.csv'),
+#             (f'{BASE2}/MNIST_12_Pred.csv'),
+#             (f'{BASE2}/MNIST_23_Pred.csv'),
+#             (f'{BASE2}/MNIST_34_Pred.csv'),
+#             (f'{BASE2}/MNIST_45_Pred.csv'),
+#             (f'{BASE2}/MNIST_56_Pred.csv'),
+#             (f'{BASE2}/MNIST_67_Pred.csv')
+# ]
+
 for train in Train_list:
     df = pd.read_csv(train)
     true_vals = df['TrueDShap']
@@ -554,7 +742,7 @@ removal_percentages, results = PerformancePlot_Removal(
     X_train = X_train, y_train = y_train,
     X_test = X_test, y_test = y_test,
     a = 0.05, b = 0.4, ylim = (20,85),
-    order = 'descending', random_iters = 10,
+    order = 'ascending', random_iters = 10,
     save_path = PERF_PATH
 )
 

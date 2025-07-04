@@ -2,24 +2,24 @@
 ' For Calculation of Ground-Truth Data Shapley Values '
 import pandas as pd
 import numpy as np
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import itertools
-#from torch.utils.data import TensorData, DataLoader
-from torch.utils.data import TensorDataset, DataLoader
+import math
 from itertools import combinations
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from joblib import Parallel, delayed
-from collections import defaultdict
-from ast import increment_lineno
+from functools import lru_cache
+from sklearn.datasets import load_iris
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+if torch.cuda.is_available():
+    print("CUDA is available!  You have", torch.cuda.device_count(), "GPU(s).")
+    print("Current device index:", torch.cuda.current_device())
+    print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+else:
+    print("CUDA is not available.  Running on CPU.")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -73,24 +73,24 @@ class TorchLogisticRegression(nn.Module):
 
 def train_torch_lr(X_train, y_train, X_test, y_test, epochs = 100, seed = None):
     if seed is not None:
-        torch.manual_seed(0)
-        np.random.seed(0)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
 
-    X_train = torch.tensor(X_train.values, dtype = torch.float32).to(device)
-    y_train = torch.tensor(y_train.values, dtype = torch.float32).to(device)
-    X_test = torch.tensor(X_test.values, dtype = torch.float32).to(device)
-    y_test = torch.tensor(y_test.values, dtype = torch.float32).to(device)
+    X_train = torch.tensor(X_train.values, dtype = torch.float32, device = device)
+    y_train = torch.tensor(y_train.values, dtype = torch.float32, device = device)
+    X_test = torch.tensor(X_test.values, dtype = torch.float32, device = device)
+    y_test = torch.tensor(y_test.values, dtype = torch.float32, device = device)
 
     model = TorchLogisticRegression(X_train.shape[1]).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    optimizer = torch.optim.LBFGS(model.parameters(), lr=1.0, max_iter = 100)
 
     for _ in range(epochs):
-        model.train()
-        y_pred = model(X_train)
-        loss = F.binary_cross_entropy(y_pred, y_train)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        def closure():
+            optimizer.zero_grad()
+            loss = F.binary_cross_entropy(model(X_train), y_train)
+            loss.backward()
+            return loss
+        optimizer.step(closure)
 
     model.eval()
     with torch.no_grad():
@@ -98,62 +98,45 @@ def train_torch_lr(X_train, y_train, X_test, y_test, epochs = 100, seed = None):
         acc = (preds == y_test).float().mean().item()
     return acc
 
-def DataShapleyTorch(X, y, X_test, y_test, n_jobs = 1, batch_size = 500):
+def DataShapleyTorch(X, y, X_test, y_test, n_jobs: int = 4, chunk_size: int = None):
     N = len(X)
-    DShap = np.zeros(N)
     baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
-    utility_cache = {}
+    if chunk_size is None:
+        chunk_size = n_jobs * 2
 
-    for i in tqdm(range(N), desc = 'Computing GPU Data Shapley'):
-        marginal_sum = 0
-        others = list(set(range(N)) - {i})
-        subset_jobs = []
+    @lru_cache(maxsize = None)
+    def utility(key):
+        idx = list(key)
+        y_sub = y.iloc[idx]
+        if y_sub.nunique() < 2:
+            return baseline
+        X_sub = X.iloc[idx]
+        return train_torch_lr(X_sub, y_sub, X_test, y_test, epochs = 100, seed = hash(key)%(2**32))
 
+    def phi_i(i):
+        others = [j for j in range(N) if j != i]
+        total = 0.0
         for s in range(2, N):
-            for subset_indices in combinations(others, s):
-                subset_jobs.append((s, subset_indices))
+            w = 1.0 / (N * math.comb(N-1, s))
+            for subset in combinations(others, s):
+                key_s = tuple(subset)
+                key_si = tuple(sorted(subset + (i,)))
+                total += w * (utility(key_si) - utility(key_s))
+        return i, total
 
-        def process_batch(batch):
-            contribs = []
-            for s, subset_indices in batch:
-                subset = list(subset_indices)
-                key_s = tuple(sorted(subset))
-                key_si = tuple(sorted(subset + [i]))
+    DShap = np.zeros(N)
+    indices = list(range(N))
+    pbar = tqdm(total = N, desc = "Computing GPU Data Shapley")
 
-                X_s = X.iloc[subset]
-                y_s = y.iloc[subset]
-                X_si = pd.concat([X_s, X.iloc[[i]]], axis = 0)
-                y_si = pd.concat([y_s, y.iloc[[i]]], axis = 0)
+    for start in range(0, N, chunk_size):
+        batch = indices[start: start + chunk_size]
+        results = Parallel(n_jobs = n_jobs, prefer = "threads")(delayed(phi_i)(i) for i in batch)
+        for i, val in results:
+            DShap[i] = val
+        pbar.update(len(batch))
 
-                if len(np.unique(y_s)) < 2:
-                    U_s = baseline
-                else:
-                    U_s = utility_cache.get(key_s)
-                    if U_s is None:
-                        U_s = train_torch_lr(X_s, y_s, X_test, y_test, epochs = 100, seed = hash(key_s)%(2**32))
-                        utility_cache[key_s] = U_s
-
-                if len(np.unique(y_s)) < 2:
-                    U_si = baseline
-                else:
-                    U_si = utility_cache.get(key_si)
-                    if U_si is None:
-                        U_si = train_torch_lr(X_si, y_si, X_test, y_test, seed = hash(key_si)%(2**32))
-                        utility_cache[key_si] = U_si
-
-                weight = 1/(N * math.comb(N-1, s))
-                contribs.append(weight * (U_si - U_s))
-            return contribs
-
-        for batch_start in range(0, len(subset_jobs), batch_size):
-            batch = subset_jobs[batch_start: batch_start + batch_size]
-            batch_contribs = process_batch(batch)
-            marginal_sum += sum(batch_contribs)
-
-        DShap[i] = marginal_sum
-
+    pbar.close()
     return DShap
-
 
 
 ''' 2. Experiment on Iris Dataset '''
@@ -165,7 +148,7 @@ y = pd.Series(iris.target, name='target')
 iris_df = pd.concat([X_scaled, y], axis=1)
 iris_0 = iris_df[iris_df["target"] == 0].sample(n = 15, random_state = 1)
 iris_1 = iris_df[iris_df["target"] == 1].sample(n = 15, random_state = 1)
-iris_2 = iris_df[iris_df["target"] == 2].sample(n = 10, random_state = 1)
+iris_2 = iris_df[iris_df["target"] == 2].sample(n = 15, random_state = 1)
 iris_01 = pd.concat([iris_0, iris_1], axis = 0)
 iris_02 = pd.concat([iris_0, iris_2], axis = 0)
 iris_12 = pd.concat([iris_1, iris_2], axis = 0)
@@ -173,7 +156,8 @@ iris_12 = pd.concat([iris_1, iris_2], axis = 0)
 '0&1'
 X_train01, X_test01, y_train01, y_test01 = train_test_split(iris_01.drop(columns = ['target']), iris_01['target'],
                                                             test_size=0.5, stratify=iris_01['target'], random_state=0)
-D_shap = DataShapleyTorch(X_train01, y_train01, X_test01, y_test01, n_jobs = 1, batch_size = 500)
+DShap1 = DataShapleyTorch(X_train01, y_train01, X_test01, y_test01, n_jobs = 4, chunk_size = 8)
+DShap2 = DataShapley(X_train01, y_train01, X_test01, y_test01, n_jobs = -1)
 D_shap01 = D_shap
 model = LogisticRegression(max_iter = 500).fit(X_train01, y_train01)
 print(model.score(X_test01, y_test01))

@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 import math
+import traceback
 import itertools
 from itertools import combinations
 from sklearn.datasets import load_iris, load_breast_cancer
@@ -23,11 +24,13 @@ import sys
 print(sys.executable)
 import os
 os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+#os.chdir('/tmp/pycharm_project_236/DataShapley')
+sys.path.append(os.getcwd())
 #sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
 
 ### Package and Environments for TMC_Shapley
-%load_ext autoreload
-%autoreload 2
+#%load_ext autoreload
+#%autoreload 2
 import importlib
 #import shap_utils
 #importlib.reload(shap_utils)
@@ -95,11 +98,59 @@ MEM_DIR = './'
 #         DShap[i] = marginal_sum
 #     return DShap
 
-'Optimised by: memoization of subsets & parallel processing'
+# 'Optimised by: memoization of subsets & parallel processing'
+# def baseline_accuracy(y_test):
+#     return max(np.mean(y_test == c) for c in np.unique(y_test))
+#
+# def DataShapley(X, y, X_test, y_test, n_jobs = -1):
+#     N = len(X)
+#     DShap = np.zeros(N)
+#     baseline = baseline_accuracy(y_test)
+#     utility_cache = {}
+#
+#     def compute_utility(X_subset, y_subset, key):
+#         if key in utility_cache:
+#             return utility_cache[key]
+#         if len(np.unique(y_subset)) < 2:
+#             utility = baseline
+#         else:
+#             model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
+#             utility = model.score(X_test, y_test)
+#         utility_cache[key] = utility
+#         return utility
+#
+#     for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
+#         marginal_sum = 0
+#         others = list(set(range(N)) - {i})
+#
+#         def process_subset(s, subset_indices):
+#             subset = list(subset_indices)
+#             key_s = tuple(sorted(subset))
+#             key_si = tuple(sorted(subset) + [i])
+#
+#             X_s = X.iloc[subset]
+#             y_s = y.iloc[subset]
+#             X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
+#             y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
+#
+#             U_s = compute_utility(X_s, y_s, key_s)
+#             U_si = compute_utility(X_si, y_si, key_si)
+#
+#             weight = 1/(N * math.comb(N - 1, s))
+#             return weight * (U_si - U_s)
+#         results = Parallel(n_jobs = n_jobs)(
+#             delayed(process_subset)(s, subset_indices)
+#             for s in range(2, N)
+#             for subset_indices in combinations(others, s)
+#         )
+#         DShap[i] = sum(results)
+#     return DShap
+
+'Optimised by: memoization of subsets & parallel processing & batch processing'
 def baseline_accuracy(y_test):
     return max(np.mean(y_test == c) for c in np.unique(y_test))
 
-def DataShapley(X, y, X_test, y_test, n_jobs = -1):
+def DataShapley(X, y, X_test, y_test, n_jobs = -1, batch_size = 100):
     N = len(X)
     DShap = np.zeros(N)
     baseline = baseline_accuracy(y_test)
@@ -111,289 +162,417 @@ def DataShapley(X, y, X_test, y_test, n_jobs = -1):
         if len(np.unique(y_subset)) < 2:
             utility = baseline
         else:
-            model = LogisticRegression(max_iter=500).fit(X_subset, y_subset)
+            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
             utility = model.score(X_test, y_test)
         utility_cache[key] = utility
         return utility
 
-    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-        marginal_sum = 0
-        others = list(set(range(N)) - {i})
-
-        def process_subset(s, subset_indices):
+    def batch_process(i, batch):
+        results = []
+        for s, subset_indices in batch:
             subset = list(subset_indices)
             key_s = tuple(sorted(subset))
             key_si = tuple(sorted(subset) + [i])
 
             X_s = X.iloc[subset]
-            y_s = y.iloc[subset]
             X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
+            y_s = y.iloc[subset]
             y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
 
             U_s = compute_utility(X_s, y_s, key_s)
             U_si = compute_utility(X_si, y_si, key_si)
-
             weight = 1/(N * math.comb(N - 1, s))
-            return weight * (U_si - U_s)
-        results = Parallel(n_jobs = n_jobs)(
-            delayed(process_subset)(s, subset_indices)
-            for s in range(2, N)
-            for subset_indices in combinations(others, s)
+            results.append(weight * (U_si - U_s))
+        return sum(results)
+
+    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
+        others = list(set(range(N)) - {i})
+        all_tasks = []
+        for s in range(2, N):
+            combs = list(combinations(others, s))
+            all_tasks.extend([(s, subset) for subset in combs])
+        batches = [all_tasks[j:j + batch_size] for j in range(0, len(all_tasks), batch_size)]
+
+        batch_results = Parallel(n_jobs = n_jobs)(
+            delayed(batch_process)(i, batch) for batch in batches
         )
-        DShap[i] = sum(results)
+        DShap[i] = sum(batch_results)
+
     return DShap
 
 
 ''' 2. Experiment on Iris Dataset '''
+# iris = load_iris()
+# X = pd.DataFrame(iris.data, columns=iris.feature_names)
+# scaler = StandardScaler()
+# X_scaled = pd.DataFrame(scaler.fit_transform(X), columns = X.columns)
+# y = pd.Series(iris.target, name='target')
+# iris_df = pd.concat([X_scaled, y], axis=1)
+# iris_0 = iris_df[iris_df["target"] == 0].sample(n = 15, random_state = 1)
+# iris_1 = iris_df[iris_df["target"] == 1].sample(n = 15, random_state = 1)
+# iris_2 = iris_df[iris_df["target"] == 2].sample(n = 15, random_state = 1)
+# iris_01 = pd.concat([iris_0, iris_1], axis = 0)
+# iris_02 = pd.concat([iris_0, iris_2], axis = 0)
+# iris_12 = pd.concat([iris_1, iris_2], axis = 0)
+#
+# '0&1'
+# X_train01, X_test01, y_train01, y_test01 = train_test_split(iris_01.drop(columns = ['target']), iris_01['target'],
+#                                                             test_size=0.5, stratify=iris_01['target'], random_state=0)
+# D_shap = DataShapley(X_train01, y_train01, X_test01, y_test01, n_jobs = -1)
+# D_shap2 = DataShapley2(X_train01, y_train01, X_test01, y_test01, n_jobs = -1, batch_size = 100)
+# D_shap01 = D_shap
+# model = LogisticRegression(max_iter = 500).fit(X_train01, y_train01)
+# print(model.score(X_test01, y_test01))
+# print(pd.Series(y_train01).value_counts())
+# print(pd.Series(y_test01).value_counts())
+# Iris_01 = X_train01.copy()
+# Iris_01['target'] = y_train01.values
+# Iris_01['TrueDShap'] = D_shap01
+# #Iris_01.to_csv('/tmp/pycharm_project_236/Outputs/250618/Trial06/Iris_01_10pts_CPU.csv', index = False)
+# Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01', index = False)
+# Iris_01_test = X_test01.copy()
+# Iris_01_test['target'] = y_test01.values
+# Iris_01_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01_test', index = False)
+# model = 'logistic'
+# problem = 'classification'
+# num_test = 15
+# directory = './temp'
+# shapley_Iris01 = DShap(X_train01.values, y_train01.values, X_test01.values, y_test01.values, num_test, sources = None,
+#                    sample_weight = None, model_family = model,metric = 'accuracy',
+#                    overwrite = True, directory = directory, seed = 250612,
+#                    max_iter = 100, tol = 1e-5)
+# shapley_Iris01.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
+# Iris_01_TMC = Iris_01.copy()
+# Iris_01_TMC['TMC_Shap'] = shapley_Iris01.vals_tmc
+# ##Export dataset
+# Iris_01_TMC.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01_TMC', index = False)
+#
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+# increments = np.arange(0, len(X_train01)+1, 10)
+# rand_age = np.random.rand(len(X_train01))
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris01_Low.png'
+# #path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_10pts_Low_CPU.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap01},
+#             X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
+#             a=0.02, b=0.5, ylim=(20, 105), order='ascending', random_iters=10, save_path=path)
+#
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+# increments = np.arange(0, len(X_train01)+1, 10)
+# rand_age = np.random.rand(len(X_train01))
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris01_High_TMC.png'
+# #path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_10pts_Low_CPU.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap01,
+#           'TMC Shapley': shapley_Iris01.vals_tmc},
+#             X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
+#             a=0.02, b=0.5, ylim=(20, 105), order='descending', random_iters=10, save_path=path)
+#
+# '0&2'
+# X_train02, X_test02, y_train02, y_test02 = train_test_split(iris_02.drop(columns = ['target']), iris_02['target'],
+#                                                             test_size=0.5, stratify=iris_02['target'], random_state=0)
+# D_shap02 = DataShapley(X_train02, y_train02, X_test02, y_test02, n_jobs = -1)
+# model = LogisticRegression(max_iter = 500).fit(X_train02, y_train02)
+# print(model.score(X_test02, y_test02))
+# print(pd.Series(y_train02).value_counts())
+# print(pd.Series(y_test02).value_counts())
+# Iris_02 = X_train02.copy()
+# Iris_02['target'] = y_train02.values
+# Iris_02['TrueDShap'] = D_shap02
+# Iris_02.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_02', index = False)
+# Iris_02_test = X_test02.copy()
+# Iris_02_test['target'] = y_test02.values
+# Iris_02_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_02_test', index = False)
+#
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+# increments = np.arange(0, len(X_train02)+1, 10)
+# rand_age = np.random.rand(len(X_train02))
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris02_Low.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap02},
+#             X_train=X_train02.values, y_train=y_train02.values, X_test=X_test02.values, y_test=y_test02.values,
+#             a=0.03, b=0.5, ylim=(20, 105), order='ascending', random_iters=10, save_path=path)
+#
+# '1&2'
+# X_train12, X_test12, y_train12, y_test12 = train_test_split(iris_12.drop(columns = ['target']), iris_12['target'],
+#                                                             test_size=0.5, stratify=iris_12['target'], random_state=0)
+# D_shap12 = DataShapley(X_train12, y_train12, X_test12, y_test12, n_jobs = -1)
+# model = LogisticRegression(max_iter = 500).fit(X_train12, y_train12)
+# print(model.score(X_test12, y_test12)) # 0.9
+# print(pd.Series(y_train12).value_counts())
+# print(pd.Series(y_test12).value_counts())
+# Iris_12 = X_train12.copy()
+# Iris_12['target'] = y_train12.values
+# Iris_12['TrueDShap'] = D_shap12
+# Iris_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12', index = False)
+# Iris_12_test = X_test12.copy()
+# Iris_12_test['target'] = y_test12.values
+# Iris_12_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test', index = False)
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+# increments = np.arange(0, len(X_train12)+1, 10)
+# rand_age = np.random.rand(len(X_train12))
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris12_Low.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap12},
+#             X_train=X_train12.values, y_train=y_train12.values, X_test=X_test12.values, y_test=y_test12.values,
+#             a=0.03, b=0.5, ylim=(50, 105), order='ascending', random_iters=10, save_path=path)
+#
+# ##Calculation of TMC Shapley values
+# y_train12 = y_train12.replace({1: 0, 2: 1})
+# y_test12 = y_test12.replace({1: 0, 2: 1})
+# model = 'logistic'
+# problem = 'classification'
+# num_test = 15
+# directory = './temp'
+# shapley_Iris12 = DShap(X_train12.values, y_train12.values, X_test12.values, y_test12.values, num_test, sources = None,
+#                    sample_weight = None, model_family = model,metric = 'accuracy',
+#                    overwrite = True, directory = directory, seed = 250612,
+#                    max_iter = 100, tol = 1e-5)
+# shapley_Iris12.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
+# Iris_12_TMC = Iris_12.copy()
+# Iris_12_TMC['TMC_Shap'] = shapley_Iris12.vals_tmc
+# ##Export dataset
+# Iris_12_TMC.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC', index = False)
+#
+# increments = np.arange(0, len(X_train12)+1, 10)
+# rand_age = np.random.rand(len(X_train12))
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris12_Low_TMC.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap12,
+#           'TMC Data Shapley': shapley_Iris12.vals_tmc},
+#             X_train=X_train12.values, y_train=y_train12.values, X_test=X_test12.values, y_test=y_test12.values,
+#             a=0.03, b=0.5, ylim=(60, 100), order='ascending', random_iters=10, save_path=path)
+
+'Automatic Generation'
+n_trials = 5
+m = 15
+save_dir = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04'
+#save_dir = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V3'
+model = 'logistic'
+problem = 'classification'
+metric = 'accuracy'
+num_test = m
+directory = './temp'
+
 iris = load_iris()
-X = pd.DataFrame(iris.data, columns=iris.feature_names)
-scaler = StandardScaler()
-X_scaled = pd.DataFrame(scaler.fit_transform(X), columns = X.columns)
-y = pd.Series(iris.target, name='target')
+X = pd.DataFrame(iris.data, columns = iris.feature_names)
+y = pd.Series(iris.target, name = 'target')
+X_scaled = pd.DataFrame(StandardScaler().fit_transform(X), columns = X.columns)
 iris_df = pd.concat([X_scaled, y], axis=1)
-iris_0 = iris_df[iris_df["target"] == 0].sample(n = 15, random_state = 1)
-iris_1 = iris_df[iris_df["target"] == 1].sample(n = 15, random_state = 1)
-iris_2 = iris_df[iris_df["target"] == 2].sample(n = 15, random_state = 1)
-iris_01 = pd.concat([iris_0, iris_1], axis = 0)
-iris_02 = pd.concat([iris_0, iris_2], axis = 0)
-iris_12 = pd.concat([iris_1, iris_2], axis = 0)
 
-'0&1'
-X_train01, X_test01, y_train01, y_test01 = train_test_split(iris_01.drop(columns = ['target']), iris_01['target'],
-                                                            test_size=0.5, stratify=iris_01['target'], random_state=0)
-D_shap = DataShapley(X_train01, y_train01, X_test01, y_test01, n_jobs = -1)
-D_shap01 = D_shap
-model = LogisticRegression(max_iter = 500).fit(X_train01, y_train01)
-print(model.score(X_test01, y_test01))
-print(pd.Series(y_train01).value_counts())
-print(pd.Series(y_test01).value_counts())
-Iris_01 = X_train01.copy()
-Iris_01['target'] = y_train01.values
-Iris_01['TrueDShap'] = D_shap01
-#Iris_01.to_csv('/tmp/pycharm_project_236/Outputs/250618/Trial06/Iris_01_10pts_CPU.csv', index = False)
-Iris_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01', index = False)
-Iris_01_test = X_test01.copy()
-Iris_01_test['target'] = y_test01.values
-Iris_01_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01_test', index = False)
+for i in range(1, n_trials + 1):
+    iris_1 = iris_df[iris_df["target"] == 1].sample(n = m, random_state = i)
+    iris_2 = iris_df[iris_df["target"] == 2].sample(n = m, random_state = i)
+    iris_12 = pd.concat([iris_1, iris_2], axis = 0)
+    iris_12['target'] = iris_12['target'].map({1:0, 2:1})
 
+    X_train, X_test, y_train, y_test = train_test_split(
+        iris_12.drop(columns = ['target']),
+        iris_12['target'],
+        test_size = 0.5,
+        stratify = iris_12['target'],
+        random_state = i
+    )
 
-' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-increments = np.arange(0, len(X_train01)+1, 10)
-rand_age = np.random.rand(len(X_train01))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris01_Low.png'
-#path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_10pts_Low_CPU.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap01},
-            X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
-            a=0.02, b=0.5, ylim=(20, 105), order='ascending', random_iters=10, save_path=path)
+    D_Shap = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1, batch_size = 300)
+    Iris_train = X_train.copy()
+    Iris_train['target'] = y_train.values
+    Iris_train['TrueDShap'] = D_Shap
+    Iris_train.to_csv(f'{save_dir}/Iris_12_{i}', index=False)
 
-model = 'logistic'
-problem = 'classification'
-num_test = 15
-directory = './temp'
-shapley_Iris01 = DShap(X_train01.values, y_train01.values, X_test01.values, y_test01.values, num_test, sources = None,
-                   sample_weight = None, model_family = model,metric = 'accuracy',
-                   overwrite = True, directory = directory, seed = 250612,
-                   max_iter = 100, tol = 1e-5)
-shapley_Iris01.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
-Iris_01_TMC = Iris_01.copy()
-Iris_01_TMC['TMC_Shap'] = shapley_Iris01.vals_tmc
-##Export dataset
-Iris_01_TMC.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_01_TMC', index = False)
+    Iris_test = X_test.copy()
+    Iris_test['target'] = y_test.values
+    Iris_test.to_csv(f'{save_dir}/Iris_12_test_{i}', index=False)
 
-' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-increments = np.arange(0, len(X_train01)+1, 10)
-rand_age = np.random.rand(len(X_train01))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris01_High_TMC.png'
-#path = '/tmp/pycharm_project_236/Outputs/250618/Trial06/Removal_Iris01_10pts_Low_CPU.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap01,
-          'TMC Shapley': shapley_Iris01.vals_tmc},
-            X_train=X_train01.values, y_train=y_train01.values, X_test=X_test01.values, y_test=y_test01.values,
-            a=0.02, b=0.5, ylim=(20, 105), order='descending', random_iters=10, save_path=path)
-
-'0&2'
-X_train02, X_test02, y_train02, y_test02 = train_test_split(iris_02.drop(columns = ['target']), iris_02['target'],
-                                                            test_size=0.5, stratify=iris_02['target'], random_state=0)
-D_shap02 = DataShapley(X_train02, y_train02, X_test02, y_test02, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train02, y_train02)
-print(model.score(X_test02, y_test02))
-print(pd.Series(y_train02).value_counts())
-print(pd.Series(y_test02).value_counts())
-Iris_02 = X_train02.copy()
-Iris_02['target'] = y_train02.values
-Iris_02['TrueDShap'] = D_shap02
-Iris_02.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_02', index = False)
-Iris_02_test = X_test02.copy()
-Iris_02_test['target'] = y_test02.values
-Iris_02_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_02_test', index = False)
-
-
-' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-increments = np.arange(0, len(X_train02)+1, 10)
-rand_age = np.random.rand(len(X_train02))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris02_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap02},
-            X_train=X_train02.values, y_train=y_train02.values, X_test=X_test02.values, y_test=y_test02.values,
-            a=0.03, b=0.5, ylim=(20, 105), order='ascending', random_iters=10, save_path=path)
-
-'1&2'
-X_train12, X_test12, y_train12, y_test12 = train_test_split(iris_12.drop(columns = ['target']), iris_12['target'],
-                                                            test_size=0.5, stratify=iris_12['target'], random_state=0)
-D_shap12 = DataShapley(X_train12, y_train12, X_test12, y_test12, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train12, y_train12)
-print(model.score(X_test12, y_test12)) # 0.9
-print(pd.Series(y_train12).value_counts())
-print(pd.Series(y_test12).value_counts())
-Iris_12 = X_train12.copy()
-Iris_12['target'] = y_train12.values
-Iris_12['TrueDShap'] = D_shap12
-Iris_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12', index = False)
-Iris_12_test = X_test12.copy()
-Iris_12_test['target'] = y_test12.values
-Iris_12_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-increments = np.arange(0, len(X_train12)+1, 10)
-rand_age = np.random.rand(len(X_train12))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris12_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap12},
-            X_train=X_train12.values, y_train=y_train12.values, X_test=X_test12.values, y_test=y_test12.values,
-            a=0.03, b=0.5, ylim=(50, 105), order='ascending', random_iters=10, save_path=path)
-
-##Calculation of TMC Shapley values
-y_train12 = y_train12.replace({1: 0, 2: 1})
-y_test12 = y_test12.replace({1: 0, 2: 1})
-model = 'logistic'
-problem = 'classification'
-num_test = 15
-directory = './temp'
-shapley_Iris12 = DShap(X_train12.values, y_train12.values, X_test12.values, y_test12.values, num_test, sources = None,
-                   sample_weight = None, model_family = model,metric = 'accuracy',
-                   overwrite = True, directory = directory, seed = 250612,
-                   max_iter = 100, tol = 1e-5)
-shapley_Iris12.run(save_every = 100, err = 0.1, g_run = True, loo_run = True)
-Iris_12_TMC = Iris_12.copy()
-Iris_12_TMC['TMC_Shap'] = shapley_Iris12.vals_tmc
-##Export dataset
-Iris_12_TMC.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC', index = False)
-
-increments = np.arange(0, len(X_train12)+1, 10)
-rand_age = np.random.rand(len(X_train12))
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_Iris12_Low_TMC.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap12,
-          'TMC Data Shapley': shapley_Iris12.vals_tmc},
-            X_train=X_train12.values, y_train=y_train12.values, X_test=X_test12.values, y_test=y_test12.values,
-            a=0.03, b=0.5, ylim=(60, 100), order='ascending', random_iters=10, save_path=path)
-
+    shapley_model = DShap(X_train.values, y_train.values,
+                          X_test.values, y_test.values,
+                          num_test, sources=None,
+                          sample_weight=None, model_family=model,
+                          metric=metric, overwrite=True,
+                          directory=directory, seed=250625 + i,
+                          max_iter=100, tol=1e-5)
+    shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
+    Iris_TMC = Iris_train.copy()
+    Iris_TMC['TMC_Shap'] = shapley_model.vals_tmc
+    Iris_TMC.to_csv(f'{save_dir}/Iris_12_TMC_{i}', index=False)
+    print(f'[Trial {i}] CSV files saved.')
 
 
 
 ''' 2. Experiment on Breast Cancer Dataset '''
+# bc = load_breast_cancer()
+# X = pd.DataFrame(bc.data, columns=bc.feature_names)
+# y = pd.Series(bc.target, name='target')
+# scaler = StandardScaler()
+# X_scaled = pd.DataFrame(scaler.fit_transform(X), columns = X.columns)
+# pca = PCA(n_components = 5)
+# X_pca = pd.DataFrame(pca.fit_transform(X_scaled), columns = [f'PC{i+1}' for i in range(5)])
+# bc_df = pd.concat([X_pca, y], axis=1)
+# bc_0 = bc_df[bc_df["target"] == 0]
+# bc_1 = bc_df[bc_df["target"] == 1]
+# bc_0_sample_1 = bc_0.sample(n = 15, random_state = 1)
+# bc_1_sample_1 = bc_1.sample(n = 15, random_state = 1)
+# bc_0_sample_2 = bc_0.sample(n = 15, random_state = 2)
+# bc_1_sample_2 = bc_1.sample(n = 15, random_state = 2)
+# bc_0_sample_3 = bc_0.sample(n = 15, random_state = 3)
+# bc_1_sample_3 = bc_1.sample(n = 15, random_state = 3)
+# bc_train1 = pd.concat([bc_0_sample_1, bc_1_sample_1], axis = 0)
+# bc_train2 = pd.concat([bc_0_sample_2, bc_1_sample_2], axis = 0)
+# bc_train3 = pd.concat([bc_0_sample_3, bc_1_sample_3], axis = 0)
+#
+# X_train1, X_test1, y_train1, y_test1 = train_test_split(bc_train1.drop(columns = ['target']), bc_train1['target'],
+#                                                         test_size=0.5, stratify= bc_train1['target'], random_state=1)
+# D_shap_1 = DataShapley(X_train1, y_train1, X_test1, y_test1, n_jobs = -1)
+# model = LogisticRegression(max_iter = 500).fit(X_train1, y_train1)
+# print(model.score(X_test1, y_test1)) # 0.9
+# print(pd.Series(y_train1).value_counts())
+# print(pd.Series(y_test1).value_counts())
+# bc_1 = X_train1.copy()
+# bc_1['target'] = y_train1.values
+# bc_1['TrueDShap'] = D_shap_1
+# bc_1.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_1', index = False)
+# bc_1_test = X_test1.copy()
+# bc_1_test['target'] = y_test1.values
+# bc_1_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_1_test', index = False)
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# increments = np.arange(0, len(X_train1)+1, 10)
+# rand_age = np.random.rand(len(X_train1))
+# #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/bc_1_Removal_High'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap_1},
+#             X_train=X_train1.values, y_train=y_train1.values, X_test=X_test1.values, y_test=y_test1.values,
+#             a=0.01, b=0.5, ylim=(25, 105), order='descending', random_iters=10, save_path=path)
+#
+#
+# X_train2, X_test2, y_train2, y_test2 = train_test_split(bc_train2.drop(columns = ['target']), bc_train2['target'],
+#                                                         test_size=0.5, stratify= bc_train2['target'], random_state=1)
+# D_shap_2 = DataShapley(X_train2, y_train2, X_test2, y_test2, n_jobs = -1)
+# model = LogisticRegression(max_iter = 500).fit(X_train2, y_train2)
+# print(model.score(X_test2, y_test2)) # 0.9
+# print(pd.Series(y_train2).value_counts())
+# print(pd.Series(y_test2).value_counts())
+# bc_2 = X_train2.copy()
+# bc_2['target'] = y_train2.values
+# bc_2['TrueDShap'] = D_shap_2
+# #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
+# bc_2.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_2', index = False)
+# bc_2_test = X_test2.copy()
+# bc_2_test['target'] = y_test2.values
+# bc_2_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_2_test', index = False)
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# increments = np.arange(0, len(X_train2)+1, 10)
+# rand_age = np.random.rand(len(X_train2))
+# #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_bc2_Low.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap_2},
+#             X_train=X_train2.values, y_train=y_train2.values, X_test=X_test2.values, y_test=y_test2.values,
+#             a=0.03, b=0.5, ylim=(50, 105), order='ascending', random_iters=10, save_path=path)
+#
+# X_train3, X_test3, y_train3, y_test3 = train_test_split(bc_train3.drop(columns = ['target']), bc_train3['target'],
+#                                                         test_size=0.5, stratify= bc_train3['target'], random_state=1)
+# D_shap_3 = DataShapley(X_train3, y_train3, X_test3, y_test3, n_jobs = -1)
+# model = LogisticRegression(max_iter = 500).fit(X_train3, y_train3)
+# print(model.score(X_test3, y_test3)) # 0.9
+# print(pd.Series(y_train3).value_counts())
+# print(pd.Series(y_test3).value_counts())
+# bc_3 = X_train3.copy()
+# bc_3['target'] = y_train3.values
+# bc_3['TrueDShap'] = D_shap_3
+# #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
+# bc_3.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_3', index = False)
+# bc_3_test = X_test3.copy()
+# bc_3_test['target'] = y_test3.values
+# bc_3_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_3_test', index = False)
+#
+# ' Performance plot (removal based on descending True Data Shapley values) '
+# increments = np.arange(0, len(X_train3)+1, 10)
+# rand_age = np.random.rand(len(X_train3))
+# #/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
+# path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_bc3_High.png'
+# removal_percentages, results = PerformancePlot_Removal(
+#     vals={'True Data Shapley': D_shap_3},
+#             X_train=X_train3.values, y_train=y_train3.values, X_test=X_test3.values, y_test=y_test3.values,
+#             a=0.03, b=0.5, ylim=(50, 105), order='descending', random_iters=10, save_path=path)
+#
+
+n_trials = 3
+m = 15
+save_dir = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05'
+directory = './temp'
+os.makedirs(save_dir, exist_ok=True)
+os.makedirs(directory, exist_ok=True)
+
 bc = load_breast_cancer()
 X = pd.DataFrame(bc.data, columns=bc.feature_names)
 y = pd.Series(bc.target, name='target')
-scaler = StandardScaler()
-X_scaled = pd.DataFrame(scaler.fit_transform(X), columns = X.columns)
-pca = PCA(n_components = 5)
-X_pca = pd.DataFrame(pca.fit_transform(X_scaled), columns = [f'PC{i+1}' for i in range(5)])
+X_scaled = pd.DataFrame(StandardScaler().fit_transform(X), columns=X.columns)
+pca = PCA(n_components=5)
+X_pca = pd.DataFrame(
+    pca.fit_transform(X_scaled),
+    columns=[f'PC{i+1}' for i in range(5)]
+)
 bc_df = pd.concat([X_pca, y], axis=1)
-bc_0 = bc_df[bc_df["target"] == 0]
-bc_1 = bc_df[bc_df["target"] == 1]
-bc_0_sample_1 = bc_0.sample(n = 15, random_state = 1)
-bc_1_sample_1 = bc_1.sample(n = 15, random_state = 1)
-bc_0_sample_2 = bc_0.sample(n = 15, random_state = 2)
-bc_1_sample_2 = bc_1.sample(n = 15, random_state = 2)
-bc_0_sample_3 = bc_0.sample(n = 15, random_state = 3)
-bc_1_sample_3 = bc_1.sample(n = 15, random_state = 3)
-bc_train1 = pd.concat([bc_0_sample_1, bc_1_sample_1], axis = 0)
-bc_train2 = pd.concat([bc_0_sample_2, bc_1_sample_2], axis = 0)
-bc_train3 = pd.concat([bc_0_sample_3, bc_1_sample_3], axis = 0)
+bc_0 = bc_df[bc_df.target == 0]
+bc_1 = bc_df[bc_df.target == 1]
 
-X_train1, X_test1, y_train1, y_test1 = train_test_split(bc_train1.drop(columns = ['target']), bc_train1['target'],
-                                                        test_size=0.5, stratify= bc_train1['target'], random_state=1)
-D_shap_1 = DataShapley(X_train1, y_train1, X_test1, y_test1, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train1, y_train1)
-print(model.score(X_test1, y_test1)) # 0.9
-print(pd.Series(y_train1).value_counts())
-print(pd.Series(y_test1).value_counts())
-bc_1 = X_train1.copy()
-bc_1['target'] = y_train1.values
-bc_1['TrueDShap'] = D_shap_1
-bc_1.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_1', index = False)
-bc_1_test = X_test1.copy()
-bc_1_test['target'] = y_test1.values
-bc_1_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_1_test', index = False)
+for i in range(1, n_trials + 1):
+    # sample 15 from each class
+    bc0 = bc_0.sample(n=m, random_state=29+i)
+    bc1 = bc_1.sample(n=m, random_state=29+i)
+    bc_train = pd.concat([bc0, bc1], axis=0).reset_index(drop=True)
 
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train1)+1, 10)
-rand_age = np.random.rand(len(X_train1))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/bc_1_Removal_High'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_1},
-            X_train=X_train1.values, y_train=y_train1.values, X_test=X_test1.values, y_test=y_test1.values,
-            a=0.01, b=0.5, ylim=(25, 105), order='descending', random_iters=10, save_path=path)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        bc_train.drop(columns='target'),
+        bc_train.target,
+        test_size=0.5,
+        stratify=bc_train.target,
+        random_state=29+i
+    )
+    D_shap = DataShapley(X_tr, y_tr, X_te, y_te, n_jobs=-1)
 
+    out_tr = X_tr.copy()
+    out_tr['target'] = y_tr.values
+    out_tr['TrueDShap'] = D_shap
+    out_tr.to_csv(f'{save_dir}/bc_{29+i}.csv', index=False)
 
-X_train2, X_test2, y_train2, y_test2 = train_test_split(bc_train2.drop(columns = ['target']), bc_train2['target'],
-                                                        test_size=0.5, stratify= bc_train2['target'], random_state=1)
-D_shap_2 = DataShapley(X_train2, y_train2, X_test2, y_test2, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train2, y_train2)
-print(model.score(X_test2, y_test2)) # 0.9
-print(pd.Series(y_train2).value_counts())
-print(pd.Series(y_test2).value_counts())
-bc_2 = X_train2.copy()
-bc_2['target'] = y_train2.values
-bc_2['TrueDShap'] = D_shap_2
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-bc_2.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_2', index = False)
-bc_2_test = X_test2.copy()
-bc_2_test['target'] = y_test2.values
-bc_2_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_2_test', index = False)
+    out_te = X_te.copy()
+    out_te['target'] = y_te.values
+    out_te.to_csv(f'{save_dir}/bc_{29+i}_test.csv', index=False)
 
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train2)+1, 10)
-rand_age = np.random.rand(len(X_train2))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_bc2_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_2},
-            X_train=X_train2.values, y_train=y_train2.values, X_test=X_test2.values, y_test=y_test2.values,
-            a=0.03, b=0.5, ylim=(50, 105), order='ascending', random_iters=10, save_path=path)
+    shapley_model = DShap(
+        X_tr.values, y_tr.values,
+        X_te.values, y_te.values,
+        m,
+        sources=None,
+        sample_weight=None,
+        model_family='logistic',
+        metric='accuracy',
+        overwrite=True,
+        directory=directory,
+        seed=250625 + i,
+        max_iter=100,
+        tol=1e-5
+    )
+    shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
-X_train3, X_test3, y_train3, y_test3 = train_test_split(bc_train3.drop(columns = ['target']), bc_train3['target'],
-                                                        test_size=0.5, stratify= bc_train3['target'], random_state=1)
-D_shap_3 = DataShapley(X_train3, y_train3, X_test3, y_test3, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train3, y_train3)
-print(model.score(X_test3, y_test3)) # 0.9
-print(pd.Series(y_train3).value_counts())
-print(pd.Series(y_test3).value_counts())
-bc_3 = X_train3.copy()
-bc_3['target'] = y_train3.values
-bc_3['TrueDShap'] = D_shap_3
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-bc_3.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_3', index = False)
-bc_3_test = X_test3.copy()
-bc_3_test['target'] = y_test3.values
-bc_3_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/bc_3_test', index = False)
+    out_tr_tmc = out_tr.copy()
+    out_tr_tmc['TMC_Shap'] = shapley_model.vals_tmc
+    out_tr_tmc.to_csv(f'{save_dir}/bc_{29+i}_TMC.csv', index=False)
 
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train3)+1, 10)
-rand_age = np.random.rand(len(X_train3))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_bc3_High.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_3},
-            X_train=X_train3.values, y_train=y_train3.values, X_test=X_test3.values, y_test=y_test3.values,
-            a=0.03, b=0.5, ylim=(50, 105), order='descending', random_iters=10, save_path=path)
+    print(f"[Trial {29+i}] CSV files saved: bc_{29+i}.csv, bc_{29+i}_test.csv, bc_{29+i}_TMC.csv")
+
 
 
 '''
