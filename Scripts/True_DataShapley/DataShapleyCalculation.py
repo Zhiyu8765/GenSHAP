@@ -39,41 +39,31 @@ MEM_DIR = '../'
 ''' 1. Function to Calculate Data Shapley Values '''
 ## Note: Two versions below yield the same results.
 'Brute Force Version'
-def baseline_accuracy(y_test):
-    return max(np.mean(y_test == c) for c in np.unique(y_test))
-
 def DataShapley(X, y, X_test, y_test):
     N = len(X)
     DShap = np.zeros(N)
-    baseline = baseline_accuracy(y_test)
-    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-        marginal_sum = 0
-        others = list(set(range(N)) - {i}) # Create index list
-        for s in range(2, N):
-            weight = 1 / (N * math.comb(N - 1, s)) if s > 0 else 1/N
-            for subset_indices in combinations(others, s):
-                subset = list(subset_indices)
+    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
 
-                X_s = X[subset]
-                y_s = y[subset]
-
-                if len(np.unique(y_s)) < 2:
-                    U_s = baseline
-                else:
-                    model_s = LogisticRegression(max_iter = 1000).fit(X_s, y_s)
-                    U_s = model_s.score(X_test, y_test)
-
-                X_si = np.vstack([X_s, X[i]])
-                y_si = np.append(y_s, y[i])
-
-                if len(np.unique(y_si)) < 2:
-                    U_si = baseline
-                else:
-                    model_si = LogisticRegression(max_iter = 1000).fit(X_si, y_si)
-                    U_si = model_si.score(X_test, y_test)
-
-                marginal_sum += weight * (U_si - U_s)
-        DShap[i] = marginal_sum
+    def U(subset_indices):
+        size = len(subset_indices)
+        if size == 0:
+            return 0.0
+        X_s = X.iloc[subset_indices]
+        y_s = y.iloc[subset_indices]
+        if size == 1 or len(np.unique(y_s)) < 2:
+            return baseline
+        model = LogisticRegression(max_iter = 100).fit(X_s, y_s)
+        return model.score(X_test, y_test)
+    for i in tqdm(range(N), desc = "Computing Exact Data Shapley(Brute Force Version)"):
+        others = [j for j in range(N) if j != i]
+        marginal_sum = 0.0
+        for s in range(0, N):
+            weight = 1 / (N * math.comb(N - 1, s))
+            for S in combinations(others, s):
+                U_S = U(list(S))
+                U_Si = U(list(S) + [i])
+                marginal_sum += weight * (U_Si - U_S)
+            DShap[i] = marginal_sum
     return DShap
 
 'Optimised by: memoization of subsets'
