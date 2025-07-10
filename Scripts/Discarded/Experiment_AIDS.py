@@ -1,8 +1,7 @@
 '''
 0. Working Directory and Packages
 '''
-from ast import increment_lineno
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
 'Check Working Directory'
 import sys
@@ -14,30 +13,21 @@ os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShaple
 'Import Packages'
 %load_ext autoreload
 %autoreload 2
-import importlib
 #import shap_utils
 #importlib.reload(shap_utils)
-import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import sklearn
 
-from Shapley import ShapNN
 from DShap import DShap
 from shap_utils import *
 from ucimlrepo import fetch_ucirepo
-from sklearn.utils import shuffle
-from sklearn.utils import resample
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from sklearn.datasets import load_iris, load_breast_cancer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score
+
 #%matplotlib inline
 MEM_DIR = '../'
 

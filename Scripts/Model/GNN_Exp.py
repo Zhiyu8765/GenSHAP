@@ -5,21 +5,15 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-import torchsort
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import dgl
 from dgl.nn.pytorch.conv import GINConv
-from mpmath.calculus.extrapolation import standardize
 from torch_geometric.data import Data
-from torch.nn import (Sequential, Linear, LeakyReLU, Dropout,
-                      TransformerEncoder, TransformerEncoderLayer)
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from torch.nn import (Sequential, Linear, LeakyReLU, TransformerEncoder, TransformerEncoderLayer)
 from sklearn.metrics.pairwise import pairwise_distances
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.utils.extmath import randomized_svd
-from tensorflow.python.ops.gen_nn_ops import LeakyRelu
+
 device = torch.device("cpu")
 
 
@@ -480,7 +474,7 @@ df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuati
 X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
 y_test = df_test['target'].to_numpy()
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_TMC_2')
-df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05/bc_31_TMC.csv')
+df_train = pd.read_csv('/Datasets/TrainnTestSets_V3/Group05/bc_31_TMC.csv')
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
 #df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2/Iris_12_TMC')
 X_train = pd.get_dummies(df_train.drop(
@@ -489,9 +483,9 @@ y_train = df_train['target'].to_numpy()
 True_Shap = df_train['TrueDShap'].to_numpy()
 TMC_Shap = df_train['TMC_Shap'].to_numpy()
 Pred_Shap = preds
-PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09', 'bc31_Pred_High.png')
+PERF_PATH = os.path.join('/Outputs/250703/Trial09', 'bc31_Pred_High.png')
 #PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250623/Trial01', 'Iris12Pred_Low.png')
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': True_Shap,
           'TMC Data Shapley': TMC_Shap,
@@ -733,7 +727,7 @@ TMC_true = TMC_true * len(TMC_true)
 LOO_vals = df_holdout['LOO'].to_numpy()
 G_true = df_holdout['G_Shap'].to_numpy()
 PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250605', 'AIDS3pred_(5+1)_low_15.png')
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_true,
           'predicted TMC': preds,
@@ -847,7 +841,7 @@ LOO_vals = df_holdout['LOO'].to_numpy()
 G_true = df_holdout['G_Shap'].to_numpy()
 
 PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250515', 'MNIST45pred_High_1.png')
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_true,
           'predicted TMC': preds,
@@ -959,7 +953,7 @@ LOO_vals = df_holdout['LOO'].to_numpy()
 G_true = df_holdout['G_Shap'].to_numpy()
 
 PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250605', 'AIDS3pred(10+1)_high_1.png')
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
     vals={'TMC Shapley': TMC_true,
           'predicted TMC': preds,

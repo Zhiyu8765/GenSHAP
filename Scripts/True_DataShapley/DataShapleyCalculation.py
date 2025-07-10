@@ -1,22 +1,10 @@
 ''' 0. Import Packages '''
 ' For Calculation of Ground-Truth Data Shapley Values '
-import pandas as pd
-import numpy as np
 import math
-import traceback
-import itertools
 from itertools import combinations
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from joblib import Parallel, delayed
-from sklearn.utils import shuffle
-from collections import defaultdict
-from ast import increment_lineno
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
 ' For Calculation of TMC Data Shapley Values'
 ### Check Working Directory
@@ -31,120 +19,153 @@ sys.path.append(os.getcwd())
 ### Package and Environments for TMC_Shapley
 #%load_ext autoreload
 #%autoreload 2
-import importlib
 #import shap_utils
 #importlib.reload(shap_utils)
-import time
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import sklearn
-from Shapley import ShapNN
 from DShap import DShap
 from shap_utils import *
-from ucimlrepo import fetch_ucirepo
 from sklearn.utils import shuffle
-from sklearn.utils import resample
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
 from sklearn.datasets import load_iris, load_breast_cancer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
 #%matplotlib inline
-MEM_DIR = './'
+MEM_DIR = '../'
 
 
 ''' 1. Function to Calculate Data Shapley Values '''
-### Note: Two versions below yield the same results.
-# 'Brute Force Version'
-# def baseline_accuracy(y_test):
-#     return max(np.mean(y_test == c) for c in np.unique(y_test))
-#
-# def DataShapley(X, y, X_test, y_test):
-#     N = len(X)
-#     DShap = np.zeros(N)
-#     baseline = baseline_accuracy(y_test)
-#     for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-#         marginal_sum = 0
-#         others = list(set(range(N)) - {i}) # Create index list
-#         for s in range(2, N):
-#             weight = 1 / (N * math.comb(N - 1, s)) if s > 0 else 1/N
-#             for subset_indices in combinations(others, s):
-#                 subset = list(subset_indices)
-#
-#                 X_s = X[subset]
-#                 y_s = y[subset]
-#
-#                 if len(np.unique(y_s)) < 2:
-#                     U_s = baseline
-#                 else:
-#                     model_s = LogisticRegression(max_iter = 1000).fit(X_s, y_s)
-#                     U_s = model_s.score(X_test, y_test)
-#
-#                 X_si = np.vstack([X_s, X[i]])
-#                 y_si = np.append(y_s, y[i])
-#
-#                 if len(np.unique(y_si)) < 2:
-#                     U_si = baseline
-#                 else:
-#                     model_si = LogisticRegression(max_iter = 1000).fit(X_si, y_si)
-#                     U_si = model_si.score(X_test, y_test)
-#
-#                 marginal_sum += weight * (U_si - U_s)
-#         DShap[i] = marginal_sum
-#     return DShap
+## Note: Two versions below yield the same results.
+'Brute Force Version'
+def baseline_accuracy(y_test):
+    return max(np.mean(y_test == c) for c in np.unique(y_test))
 
-# 'Optimised by: memoization of subsets & parallel processing'
-# def baseline_accuracy(y_test):
-#     return max(np.mean(y_test == c) for c in np.unique(y_test))
-#
-# def DataShapley(X, y, X_test, y_test, n_jobs = -1):
-#     N = len(X)
-#     DShap = np.zeros(N)
-#     baseline = baseline_accuracy(y_test)
-#     utility_cache = {}
-#
-#     def compute_utility(X_subset, y_subset, key):
-#         if key in utility_cache:
-#             return utility_cache[key]
-#         if len(np.unique(y_subset)) < 2:
-#             utility = baseline
-#         else:
-#             model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
-#             utility = model.score(X_test, y_test)
-#         utility_cache[key] = utility
-#         return utility
-#
-#     for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-#         marginal_sum = 0
-#         others = list(set(range(N)) - {i})
-#
-#         def process_subset(s, subset_indices):
-#             subset = list(subset_indices)
-#             key_s = tuple(sorted(subset))
-#             key_si = tuple(sorted(subset) + [i])
-#
-#             X_s = X.iloc[subset]
-#             y_s = y.iloc[subset]
-#             X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
-#             y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
-#
-#             U_s = compute_utility(X_s, y_s, key_s)
-#             U_si = compute_utility(X_si, y_si, key_si)
-#
-#             weight = 1/(N * math.comb(N - 1, s))
-#             return weight * (U_si - U_s)
-#         results = Parallel(n_jobs = n_jobs)(
-#             delayed(process_subset)(s, subset_indices)
-#             for s in range(2, N)
-#             for subset_indices in combinations(others, s)
-#         )
-#         DShap[i] = sum(results)
-#     return DShap
+def DataShapley(X, y, X_test, y_test):
+    N = len(X)
+    DShap = np.zeros(N)
+    baseline = baseline_accuracy(y_test)
+    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
+        marginal_sum = 0
+        others = list(set(range(N)) - {i}) # Create index list
+        for s in range(2, N):
+            weight = 1 / (N * math.comb(N - 1, s)) if s > 0 else 1/N
+            for subset_indices in combinations(others, s):
+                subset = list(subset_indices)
+
+                X_s = X[subset]
+                y_s = y[subset]
+
+                if len(np.unique(y_s)) < 2:
+                    U_s = baseline
+                else:
+                    model_s = LogisticRegression(max_iter = 1000).fit(X_s, y_s)
+                    U_s = model_s.score(X_test, y_test)
+
+                X_si = np.vstack([X_s, X[i]])
+                y_si = np.append(y_s, y[i])
+
+                if len(np.unique(y_si)) < 2:
+                    U_si = baseline
+                else:
+                    model_si = LogisticRegression(max_iter = 1000).fit(X_si, y_si)
+                    U_si = model_si.score(X_test, y_test)
+
+                marginal_sum += weight * (U_si - U_s)
+        DShap[i] = marginal_sum
+    return DShap
+
+'Optimised by: memoization of subsets'
+def DataShapley(X, y, X_test, y_test):
+    N = len(X)
+    DShap = np.zeros(N)
+    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+    utility_cache = {}
+
+    def compute_utility(X_subset, y_subset, key):
+        if key in utility_cache:
+            return utility_cache[key]
+        if len(np.unique(y_subset)) < 2:
+            utility = baseline
+        else:
+            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
+            utility = model.score(X_test, y_test)
+        utility_cache[key] = utility
+        return utility
+
+    for i in tqdm(range(N), desc="Computing Exact Data Shapley (Sequential)"):
+        marginal_sum = 0.0
+        others = [j for j in range(N) if j != i]
+
+        for s in range(2, N):
+            weight = 1 / (N * math.comb(N - 1, s))
+            for subset in combinations(others, s):
+                subset = list(subset)
+                key_s = tuple(sorted(subset))
+                key_si = tuple(sorted(subset + [i]))
+
+                X_s = X.iloc[subset]
+                y_s = y.iloc[subset]
+                X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
+                y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
+
+                U_s = compute_utility(X_s, y_s, key_s)
+                U_si = compute_utility(X_si, y_si, key_si)
+
+                marginal_sum += weight * (U_si - U_s)
+
+        DShap[i] = marginal_sum
+
+    return DShap
+
+'Optimised by: memoization of subsets & parallel processing'
+def baseline_accuracy(y_test):
+    return max(np.mean(y_test == c) for c in np.unique(y_test))
+
+def DataShapley(X, y, X_test, y_test, n_jobs = -1):
+    N = len(X)
+    DShap = np.zeros(N)
+    baseline = baseline_accuracy(y_test)
+    utility_cache = {}
+
+    def compute_utility(X_subset, y_subset, key):
+        if key in utility_cache:
+            return utility_cache[key]
+        if len(np.unique(y_subset)) < 2:
+            utility = baseline
+        else:
+            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
+            utility = model.score(X_test, y_test)
+        utility_cache[key] = utility
+        return utility
+
+    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
+        marginal_sum = 0
+        others = list(set(range(N)) - {i})
+
+        def process_subset(s, subset_indices):
+            subset = list(subset_indices)
+            key_s = tuple(sorted(subset))
+            key_si = tuple(sorted(subset) + [i])
+
+            X_s = X.iloc[subset]
+            y_s = y.iloc[subset]
+            X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
+            y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
+
+            U_s = compute_utility(X_s, y_s, key_s)
+            U_si = compute_utility(X_si, y_si, key_si)
+
+            weight = 1/(N * math.comb(N - 1, s))
+            return weight * (U_si - U_s)
+        results = Parallel(n_jobs = n_jobs)(
+            delayed(process_subset)(s, subset_indices)
+            for s in range(2, N)
+            for subset_indices in combinations(others, s)
+        )
+        DShap[i] = sum(results)
+    return DShap
 
 'Optimised by: memoization of subsets & parallel processing & batch processing'
 def baseline_accuracy(y_test):
@@ -352,9 +373,9 @@ def DataShapley(X, y, X_test, y_test, n_jobs = -1, batch_size = 100):
 #             a=0.03, b=0.5, ylim=(60, 100), order='ascending', random_iters=10, save_path=path)
 
 'Automatic Generation'
-n_trials = 5
+n_trials = 1
 m = 15
-save_dir = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04'
+save_dir = '/Datasets/TrainnTestSets_V3/Group04'
 #save_dir = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V3'
 model = 'logistic'
 problem = 'classification'
@@ -382,7 +403,7 @@ for i in range(1, n_trials + 1):
         random_state = i
     )
 
-    D_Shap = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1, batch_size = 300)
+    D_Shap = DataShapley(X_train, y_train, X_test, y_test)
     Iris_train = X_train.copy()
     Iris_train['target'] = y_train.values
     Iris_train['TrueDShap'] = D_Shap
@@ -509,7 +530,7 @@ for i in range(1, n_trials + 1):
 
 n_trials = 3
 m = 15
-save_dir = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05'
+save_dir = '/Datasets/TrainnTestSets_V3/Group05'
 directory = './temp'
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(directory, exist_ok=True)

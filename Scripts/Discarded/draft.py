@@ -2,7 +2,6 @@
 # 00  Imports
 ############################################################
 import os, numpy as np, pandas as pd, torch
-import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics.pairwise import pairwise_distances
@@ -190,7 +189,7 @@ if __name__ == '__main__':
     print('saved →', out_csv)
 
     # performance plot (unchanged)
-    from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+    from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
     dfp  = pd.read_csv(out_csv)
     vals = {'TMC Shapley'  : dfp['TMC_Shap'].values,
             'predicted TMC': dfp['predicted_TMC_Shap'].values,

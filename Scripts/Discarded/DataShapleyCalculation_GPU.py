@@ -13,7 +13,7 @@ from functools import lru_cache
 from sklearn.datasets import load_iris
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+
 if torch.cuda.is_available():
     print("CUDA is available!  You have", torch.cuda.device_count(), "GPU(s).")
     print("Current device index:", torch.cuda.current_device())
@@ -170,7 +170,7 @@ Iris_01['TrueDShap'] = D_shap01
 Iris_01.to_csv('/tmp/pycharm_project_236/Outputs/250618/Trial06/Iris_01_15pts_GPU', index = False)
 
 ' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 increments = np.arange(0, len(X_train01)+1, 10)
 rand_age = np.random.rand(len(X_train01))
 #path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_Iris01_High.png'
@@ -195,7 +195,7 @@ Iris_02['TrueDShap'] = D_shap02
 Iris_02.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Iris_02', index = False)
 
 ' Performance plot (removal based on descending True Data Shapley values) '
-from Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 increments = np.arange(0, len(X_train02)+1, 10)
 rand_age = np.random.rand(len(X_train02))
 path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250612/Removal_Iris02_High.png'
