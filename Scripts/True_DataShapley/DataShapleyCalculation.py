@@ -39,32 +39,32 @@ MEM_DIR = '../'
 ''' 1. Function to Calculate Data Shapley Values '''
 ## Note: Two versions below yield the same results.
 'Brute Force Version'
-def DataShapley(X, y, X_test, y_test):
-    N = len(X)
-    DShap = np.zeros(N)
-    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
-
-    def U(subset_indices):
-        size = len(subset_indices)
-        if size == 0:
-            return 0.0
-        X_s = X.iloc[subset_indices]
-        y_s = y.iloc[subset_indices]
-        if size == 1 or len(np.unique(y_s)) < 2:
-            return baseline
-        model = LogisticRegression(max_iter = 100).fit(X_s, y_s)
-        return model.score(X_test, y_test)
-    for i in tqdm(range(N), desc = "Computing Exact Data Shapley(Brute Force Version)"):
-        others = [j for j in range(N) if j != i]
-        marginal_sum = 0.0
-        for s in range(0, N):
-            weight = 1 / (N * math.comb(N - 1, s))
-            for S in combinations(others, s):
-                U_S = U(list(S))
-                U_Si = U(list(S) + [i])
-                marginal_sum += weight * (U_Si - U_S)
-            DShap[i] = marginal_sum
-    return DShap
+# def DataShapley(X, y, X_test, y_test):
+#     N = len(X)
+#     DShap = np.zeros(N)
+#     baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+#
+#     def U(subset_indices):
+#         size = len(subset_indices)
+#         if size == 0:
+#             return 0.0
+#         X_s = X.iloc[subset_indices]
+#         y_s = y.iloc[subset_indices]
+#         if size == 1 or len(np.unique(y_s)) < 2:
+#             return baseline
+#         model = LogisticRegression(max_iter = 100).fit(X_s, y_s)
+#         return model.score(X_test, y_test)
+#     for i in tqdm(range(N), desc = "Computing Exact Data Shapley(Brute Force Version)"):
+#         others = [j for j in range(N) if j != i]
+#         marginal_sum = 0.0
+#         for s in range(0, N):
+#             weight = 1 / (N * math.comb(N - 1, s))
+#             for S in combinations(others, s):
+#                 U_S = U(list(S))
+#                 U_Si = U(list(S) + [i])
+#                 marginal_sum += weight * (U_Si - U_S)
+#             DShap[i] = marginal_sum
+#     return DShap
 
 'Optimised by: memoization of subsets'
 def DataShapley(X, y, X_test, y_test):
@@ -73,16 +73,21 @@ def DataShapley(X, y, X_test, y_test):
     baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
     utility_cache = {}
 
-    def compute_utility(X_subset, y_subset, key):
+    def compute_utility(key, subset_indices):
         if key in utility_cache:
             return utility_cache[key]
-        if len(np.unique(y_subset)) < 2:
-            utility = baseline
+        size = len(subset_indices)
+        if size == 0:
+            u = 0.0
         else:
-            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
-            utility = model.score(X_test, y_test)
-        utility_cache[key] = utility
-        return utility
+            X_s = X.iloc[subset_indices]
+            y_s = y.iloc[subset_indices]
+            if size == 1 or len(np.unique(y_s)) < 2:
+                u = baseline
+            else:
+                u = LogisticRegression(max_iter = 100).fit(X_s, y_s).score(X_test, y_test)
+            utility_cache[key] = u
+            return u
 
     for i in tqdm(range(N), desc="Computing Exact Data Shapley (Sequential)"):
         marginal_sum = 0.0
