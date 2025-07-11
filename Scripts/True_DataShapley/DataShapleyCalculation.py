@@ -86,135 +86,109 @@ def DataShapley(X, y, X_test, y_test):
                 u = baseline
             else:
                 u = LogisticRegression(max_iter = 100).fit(X_s, y_s).score(X_test, y_test)
-            utility_cache[key] = u
-            return u
+        utility_cache[key] = u
+        return u
 
-    for i in tqdm(range(N), desc="Computing Exact Data Shapley (Sequential)"):
+    for i in tqdm(range(N), desc="Computing Exact Data Shapley (Memoization)"):
         marginal_sum = 0.0
         others = [j for j in range(N) if j != i]
 
-        for s in range(2, N):
+        for s in range(0, N):
             weight = 1 / (N * math.comb(N - 1, s))
-            for subset in combinations(others, s):
-                subset = list(subset)
-                key_s = tuple(sorted(subset))
-                key_si = tuple(sorted(subset + [i]))
-
-                X_s = X.iloc[subset]
-                y_s = y.iloc[subset]
-                X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
-                y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
-
-                U_s = compute_utility(X_s, y_s, key_s)
-                U_si = compute_utility(X_si, y_si, key_si)
-
+            for S in combinations(others, s):
+                key_S = tuple(sorted(S))
+                key_Si = tuple(sorted(S + (i,)))
+                U_s = compute_utility(key_S, list(S))
+                U_si = compute_utility(key_Si, list(S) + [i])
                 marginal_sum += weight * (U_si - U_s)
-
         DShap[i] = marginal_sum
 
     return DShap
 
-'Optimised by: memoization of subsets & parallel processing'
-def baseline_accuracy(y_test):
-    return max(np.mean(y_test == c) for c in np.unique(y_test))
-
-def DataShapley(X, y, X_test, y_test, n_jobs = -1):
-    N = len(X)
-    DShap = np.zeros(N)
-    baseline = baseline_accuracy(y_test)
-    utility_cache = {}
-
-    def compute_utility(X_subset, y_subset, key):
-        if key in utility_cache:
-            return utility_cache[key]
-        if len(np.unique(y_subset)) < 2:
-            utility = baseline
-        else:
-            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
-            utility = model.score(X_test, y_test)
-        utility_cache[key] = utility
-        return utility
-
-    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-        marginal_sum = 0
-        others = list(set(range(N)) - {i})
-
-        def process_subset(s, subset_indices):
-            subset = list(subset_indices)
-            key_s = tuple(sorted(subset))
-            key_si = tuple(sorted(subset) + [i])
-
-            X_s = X.iloc[subset]
-            y_s = y.iloc[subset]
-            X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
-            y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
-
-            U_s = compute_utility(X_s, y_s, key_s)
-            U_si = compute_utility(X_si, y_si, key_si)
-
-            weight = 1/(N * math.comb(N - 1, s))
-            return weight * (U_si - U_s)
-        results = Parallel(n_jobs = n_jobs)(
-            delayed(process_subset)(s, subset_indices)
-            for s in range(2, N)
-            for subset_indices in combinations(others, s)
-        )
-        DShap[i] = sum(results)
-    return DShap
-
-'Optimised by: memoization of subsets & parallel processing & batch processing'
-def baseline_accuracy(y_test):
-    return max(np.mean(y_test == c) for c in np.unique(y_test))
-
-def DataShapley(X, y, X_test, y_test, n_jobs = -1, batch_size = 100):
-    N = len(X)
-    DShap = np.zeros(N)
-    baseline = baseline_accuracy(y_test)
-    utility_cache = {}
-
-    def compute_utility(X_subset, y_subset, key):
-        if key in utility_cache:
-            return utility_cache[key]
-        if len(np.unique(y_subset)) < 2:
-            utility = baseline
-        else:
-            model = LogisticRegression(max_iter=50).fit(X_subset, y_subset)
-            utility = model.score(X_test, y_test)
-        utility_cache[key] = utility
-        return utility
-
-    def batch_process(i, batch):
-        results = []
-        for s, subset_indices in batch:
-            subset = list(subset_indices)
-            key_s = tuple(sorted(subset))
-            key_si = tuple(sorted(subset) + [i])
-
-            X_s = X.iloc[subset]
-            X_si = pd.concat([X_s, X.iloc[[i]]], axis=0)
-            y_s = y.iloc[subset]
-            y_si = pd.concat([y_s, y.iloc[[i]]], axis=0)
-
-            U_s = compute_utility(X_s, y_s, key_s)
-            U_si = compute_utility(X_si, y_si, key_si)
-            weight = 1/(N * math.comb(N - 1, s))
-            results.append(weight * (U_si - U_s))
-        return sum(results)
-
-    for i in tqdm(range(N), desc = "Computing Exact Data Shapley"):
-        others = list(set(range(N)) - {i})
-        all_tasks = []
-        for s in range(2, N):
-            combs = list(combinations(others, s))
-            all_tasks.extend([(s, subset) for subset in combs])
-        batches = [all_tasks[j:j + batch_size] for j in range(0, len(all_tasks), batch_size)]
-
-        batch_results = Parallel(n_jobs = n_jobs)(
-            delayed(batch_process)(i, batch) for batch in batches
-        )
-        DShap[i] = sum(batch_results)
-
-    return DShap
+# 'Optimised by: memoization of subsets & parallel processing'
+# def DataShapley(X, y, X_test, y_test, n_jobs=-1):
+#     N = len(X)
+#     DShap = np.zeros(N)
+#     baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+#     cache = {}
+#
+#     def compute_U(key, subset_indices):
+#         if key in cache:
+#             return cache[key]
+#         size = len(subset_indices)
+#         if size == 0:
+#             u = 0.0
+#         else:
+#             X_s = X.iloc[subset_indices]; y_s = y.iloc[subset_indices]
+#             if size == 1 or len(np.unique(y_s)) < 2:
+#                 u = baseline
+#             else:
+#                 u = LogisticRegression(max_iter=50).fit(X_s, y_s).score(X_test, y_test)
+#         cache[key] = u
+#         return u
+#
+#     def process_subset(i, s, S):
+#         key_S  = tuple(sorted(S))
+#         key_Si = tuple(sorted(S + [i]))
+#         U_S  = compute_U(key_S, S)
+#         U_Si = compute_U(key_Si, S + [i])
+#         weight = 1/(N * math.comb(N-1, s))
+#         return weight * (U_Si - U_S)
+#
+#     for i in tqdm(range(N), desc="Parallel DataShapley"):
+#         others = [j for j in range(N) if j != i]
+#         tasks = [(i, s, list(S))
+#                  for s in range(0, N)
+#                  for S in combinations(others, s)]
+#         results = Parallel(n_jobs=n_jobs)(delayed(process_subset)(*t) for t in tasks)
+#         DShap[i] = sum(results)
+#     return DShap
+#
+#
+# 'Optimised by: memoization of subsets & parallel processing & batch processing'
+# def DataShapley(X, y, X_test, y_test, n_jobs=-1, batch_size=100):
+#     N = len(X)
+#     DShap = np.zeros(N)
+#     baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+#     cache = {}
+#
+#     def compute_U(key, subset_indices):
+#         if key in cache:
+#             return cache[key]
+#         size = len(subset_indices)
+#         if size == 0:
+#             u = 0.0
+#         else:
+#             X_s = X.iloc[subset_indices]; y_s = y.iloc[subset_indices]
+#             if size == 1 or len(np.unique(y_s)) < 2:
+#                 u = baseline
+#             else:
+#                 u = LogisticRegression(max_iter=50).fit(X_s, y_s).score(X_test, y_test)
+#         cache[key] = u
+#         return u
+#
+#     def batch_process(i, tasks):
+#         total = 0.0
+#         for s, S in tasks:
+#             key_S  = tuple(sorted(S))
+#             key_Si = tuple(sorted(S + [i]))
+#             U_S  = compute_U(key_S, S)
+#             U_Si = compute_U(key_Si, S + [i])
+#             weight = 1/(N * math.comb(N-1, s))
+#             total += weight * (U_Si - U_S)
+#         return total
+#
+#     for i in tqdm(range(N), desc="Batch DataShapley"):
+#         others = [j for j in range(N) if j != i]
+#         tasks = []
+#         for s in range(0, N):
+#             for S in combinations(others, s):
+#                 tasks.append((s, list(S)))
+#         # partition into batches
+#         batches = [tasks[k:k+batch_size] for k in range(0, len(tasks), batch_size)]
+#         results = Parallel(n_jobs=n_jobs)(delayed(batch_process)(i, b) for b in batches)
+#         DShap[i] = sum(results)
+#     return DShap
 
 
 ''' 2. Experiment on Iris Dataset '''
@@ -368,9 +342,9 @@ def DataShapley(X, y, X_test, y_test, n_jobs = -1, batch_size = 100):
 #             a=0.03, b=0.5, ylim=(60, 100), order='ascending', random_iters=10, save_path=path)
 
 'Automatic Generation'
-n_trials = 1
+n_trials = 20
 m = 15
-save_dir = '/Datasets/TrainnTestSets_V3/Group04'
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group03'
 #save_dir = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V3'
 model = 'logistic'
 problem = 'classification'
@@ -385,8 +359,8 @@ X_scaled = pd.DataFrame(StandardScaler().fit_transform(X), columns = X.columns)
 iris_df = pd.concat([X_scaled, y], axis=1)
 
 for i in range(1, n_trials + 1):
-    iris_1 = iris_df[iris_df["target"] == 1].sample(n = m, random_state = i)
-    iris_2 = iris_df[iris_df["target"] == 2].sample(n = m, random_state = i)
+    iris_1 = iris_df[iris_df["target"] == 1].sample(n = m, random_state = 789+i)
+    iris_2 = iris_df[iris_df["target"] == 2].sample(n = m, random_state = 789+i)
     iris_12 = pd.concat([iris_1, iris_2], axis = 0)
     iris_12['target'] = iris_12['target'].map({1:0, 2:1})
 
@@ -421,6 +395,58 @@ for i in range(1, n_trials + 1):
     Iris_TMC.to_csv(f'{save_dir}/Iris_12_TMC_{i}', index=False)
     print(f'[Trial {i}] CSV files saved.')
 
+save_dir = (
+    "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+    "Data Valuation/DataShapley_Graph/"
+    "Datasets/TrainnTestSets_V4/Group03"
+)
+plot_dir = (
+    "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+    "Data Valuation/DataShapley_Graph/"
+    "Datasets/TrainnTestSets_V4/Group03"
+)
+os.makedirs(plot_dir, exist_ok=True)
+for i in range(1, n_trials + 1):
+    train_f = os.path.join(save_dir, f"Iris_12_{i}")
+    test_f  = os.path.join(save_dir, f"Iris_12_test_{i}")
+    tmc_f   = os.path.join(save_dir, f"Iris_12_TMC_{i}")
+
+    df_train = pd.read_csv(train_f)
+    df_test  = pd.read_csv(test_f)
+    df_tmc   = pd.read_csv(tmc_f)
+
+    X_train = df_train.drop(columns=["target", "TrueDShap"], errors="ignore").values
+    y_train = df_train["target"].values
+    true_shap = df_train["TrueDShap"].values
+
+    if "TMC_Shap" in df_tmc.columns:
+        tmc_shap = df_tmc["TMC_Shap"].values
+    else:
+        tmc_shap = df_train["TMC_Shap"].values
+
+    X_test = df_test.drop(columns=["target"], errors="ignore").values
+    y_test = df_test["target"].values
+
+    out_png_high = os.path.join(plot_dir, f"Removal_Iris_12_high_{i}.png")
+    removal_percents, results = PerformancePlot_Removal(
+        vals={
+            "True Data Shapley": true_shap,
+            "TMC Shapley":       tmc_shap
+        },
+        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(20, 105),order="descending",
+        random_iters=10, save_path=out_png_high,
+    )
+    out_png_low = os.path.join(plot_dir, f"Removal_Iris_12_low_{i}.png")
+    removal_percents, results = PerformancePlot_Removal(
+        vals={
+            "True Data Shapley": true_shap,
+            "TMC Shapley":       tmc_shap
+        },
+        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(50, 105),order="ascending",
+        random_iters=10, save_path=out_png_low,
+    )
+
+    print(f"[Trial {i}] Plot saved.")
 
 
 ''' 2. Experiment on Breast Cancer Dataset '''
@@ -523,9 +549,9 @@ for i in range(1, n_trials + 1):
 #             a=0.03, b=0.5, ylim=(50, 105), order='descending', random_iters=10, save_path=path)
 #
 
-n_trials = 3
+n_trials = 50
 m = 15
-save_dir = '/Datasets/TrainnTestSets_V3/Group05'
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group04'
 directory = './temp'
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(directory, exist_ok=True)
@@ -545,49 +571,253 @@ bc_1 = bc_df[bc_df.target == 1]
 
 for i in range(1, n_trials + 1):
     # sample 15 from each class
-    bc0 = bc_0.sample(n=m, random_state=29+i)
-    bc1 = bc_1.sample(n=m, random_state=29+i)
+    bc0 = bc_0.sample(n=m, random_state=30+i)
+    bc1 = bc_1.sample(n=m, random_state=30+i)
     bc_train = pd.concat([bc0, bc1], axis=0).reset_index(drop=True)
 
     X_tr, X_te, y_tr, y_te = train_test_split(
-        bc_train.drop(columns='target'),
-        bc_train.target,
-        test_size=0.5,
-        stratify=bc_train.target,
-        random_state=29+i
-    )
-    D_shap = DataShapley(X_tr, y_tr, X_te, y_te, n_jobs=-1)
+        bc_train.drop(columns='target'), bc_train.target, test_size=0.5, stratify=bc_train.target, random_state=30+i)
+    D_shap = DataShapley(X_tr, y_tr, X_te, y_te)
 
     out_tr = X_tr.copy()
     out_tr['target'] = y_tr.values
     out_tr['TrueDShap'] = D_shap
-    out_tr.to_csv(f'{save_dir}/bc_{29+i}.csv', index=False)
+    out_tr.to_csv(f'{save_dir}/bc_{30+i}.csv', index=False)
 
     out_te = X_te.copy()
     out_te['target'] = y_te.values
-    out_te.to_csv(f'{save_dir}/bc_{29+i}_test.csv', index=False)
+    out_te.to_csv(f'{save_dir}/bc_{30+i}_test.csv', index=False)
 
     shapley_model = DShap(
-        X_tr.values, y_tr.values,
-        X_te.values, y_te.values,
-        m,
-        sources=None,
-        sample_weight=None,
-        model_family='logistic',
-        metric='accuracy',
-        overwrite=True,
-        directory=directory,
-        seed=250625 + i,
-        max_iter=100,
-        tol=1e-5
-    )
+        X_tr.values, y_tr.values, X_te.values, y_te.values, m,
+        sources=None, sample_weight=None, model_family='logistic',
+        metric='accuracy', overwrite=True, directory=directory,
+        seed=250625 + i, max_iter=100, tol=1e-5)
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
     out_tr_tmc = out_tr.copy()
     out_tr_tmc['TMC_Shap'] = shapley_model.vals_tmc
-    out_tr_tmc.to_csv(f'{save_dir}/bc_{29+i}_TMC.csv', index=False)
+    out_tr_tmc.to_csv(f'{save_dir}/bc_{30+i}_TMC.csv', index=False)
 
-    print(f"[Trial {29+i}] CSV files saved: bc_{29+i}.csv, bc_{29+i}_test.csv, bc_{29+i}_TMC.csv")
+    print(f"[Trial {30+i}] CSV files saved.")
+
+save_dir = (
+    "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+    "Data Valuation/DataShapley_Graph/"
+    "Datasets/TrainnTestSets_V4/Group04"
+)
+plot_dir = (
+    "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+    "Data Valuation/DataShapley_Graph/"
+    "Datasets/TrainnTestSets_V4/Group04"
+)
+os.makedirs(plot_dir, exist_ok=True)
+for i in range(1, n_trials + 1):
+    train_f = os.path.join(save_dir, f"bc_{i}.csv")
+    test_f  = os.path.join(save_dir, f"bc_{i}_test.csv")
+    tmc_f   = os.path.join(save_dir, f"bc_{i}_TMC.csv")
+
+    df_train = pd.read_csv(train_f)
+    df_test  = pd.read_csv(test_f)
+    df_tmc   = pd.read_csv(tmc_f)
+
+    X_train = df_train.drop(columns=["target", "TrueDShap"], errors="ignore").values
+    y_train = df_train["target"].values
+    true_shap = df_train["TrueDShap"].values
+
+    if "TMC_Shap" in df_tmc.columns:
+        tmc_shap = df_tmc["TMC_Shap"].values
+    else:
+        tmc_shap = df_train["TMC_Shap"].values
+
+    X_test = df_test.drop(columns=["target"], errors="ignore").values
+    y_test = df_test["target"].values
+
+    out_png_high = os.path.join(plot_dir, f"Removal_bc_high_{i}.png")
+    removal_percents, results = PerformancePlot_Removal(
+        vals={
+            "True Data Shapley": true_shap,
+            "TMC Shapley":       tmc_shap
+        },
+        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(10, 105),order="descending",
+        random_iters=10, save_path=out_png_high,
+    )
+    out_png_low = os.path.join(plot_dir, f"Removal_bc_low_{i}.png")
+    removal_percents, results = PerformancePlot_Removal(
+        vals={
+            "True Data Shapley": true_shap,
+            "TMC Shapley":       tmc_shap
+        },
+        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(30, 105),order="ascending",
+        random_iters=10, save_path=out_png_low,
+    )
+
+    print(f"[Trial {i}] Plot saved.")
+
+
+import os
+import re
+directory = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group04"
+pattern = re.compile(r"^(bc)_(\d+)(?:_(test|TMC))?(\.csv)$", re.IGNORECASE)
+
+for fn in os.listdir(directory):
+    if fn.lower().endswith(".csv"):
+        base, _ = os.path.splitext(fn)     # splits off the “.csv”
+        src = os.path.join(directory, fn)
+        dst = os.path.join(directory, base) # no “.csv” here
+        print(f"Renaming {fn} → {base}")
+        os.rename(src, dst)
+
+
+'''
+True Data shapley values of MNIST 
+'''
+n_trials = 5
+m        = 15
+seed0    = 14
+class_a, class_b = 4, 5
+
+save_dir = (
+    "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+    "Data Valuation/DataShapley_Graph/"
+    "Datasets/TrainnTestSets_V4/Group09"
+)
+plot_dir = os.path.join(save_dir, "PerformancePlots")
+
+os.makedirs(save_dir, exist_ok=True)
+os.makedirs(plot_dir, exist_ok=True)
+
+
+import tensorflow as tf
+(X_train_full, y_train_full), (X_test_full, y_test_full) = tf.keras.datasets.mnist.load_data()
+
+train_mask = (y_train_full == class_a) | (y_train_full == class_b)
+test_mask  = (y_test_full  == class_a) | (y_test_full  == class_b)
+
+X_train_all = X_train_full[train_mask]
+y_train_all = y_train_full[train_mask]
+X_test_all  = X_test_full[test_mask]
+y_test_all  = y_test_full[test_mask]
+
+# flatten and normalize
+X_train_all = X_train_all.reshape(len(X_train_all), -1)
+X_test_all  = X_test_all.reshape(len(X_test_all),  -1)
+scaler    = StandardScaler()
+X_train_all = scaler.fit_transform(X_train_all)
+X_test_all  = scaler.transform(X_test_all)
+
+# PCA to 10 dimensions
+pca = PCA(n_components=5)
+X_train_all = pca.fit_transform(X_train_all)
+X_test_all  = pca.transform(X_test_all)
+
+# to pandas
+X_train_all = pd.DataFrame(X_train_all)
+y_train_all = pd.Series(y_train_all, name='target')
+X_test_all  = pd.DataFrame(X_test_all)
+y_test_all  = pd.Series(y_test_all,  name='target')
+
+
+for i in range(1, n_trials+1):
+    rs = seed0 + i
+    idx_a = y_train_all[y_train_all == class_a] \
+        .sample(n=m, random_state=rs).index
+    idx_b = y_train_all[y_train_all == class_b] \
+        .sample(n=m, random_state=rs).index
+    idx = idx_a.union(idx_b)
+    X_pool = X_train_all.loc[idx].reset_index(drop=True)
+    y_pool = y_train_all.loc[idx].reset_index(drop=True).map({class_a: 0, class_b: 1})
+
+    X_tr, X_te, y_tr, y_te = train_test_split(X_pool, y_pool,test_size=0.5,stratify=y_pool,random_state=rs)
+
+    D_Shap = DataShapley(X_tr, y_tr, X_te, y_te)
+
+    df_tr = X_tr.copy()
+    df_tr['target']    = y_tr.values
+    df_tr['TrueDShap'] = D_Shap
+    df_tr.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_train_{i}.csv", index=False)
+
+    df_te = X_te.copy()
+    df_te['target'] = y_te.values
+    df_te.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_test_{i}.csv", index=False)
+
+    shapley_model = DShap(
+        X_tr.values, y_tr.values, X_te.values, y_te.values,
+        num_test=m, sources=None, sample_weight=None,
+        model_family='logistic', metric='accuracy', overwrite=True,
+        directory='./temp', seed=250625+i, max_iter=100, tol=1e-5
+    )
+    shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
+
+    df_tmc = df_tr.copy()
+    df_tmc['TMC_Shap'] = shapley_model.vals_tmc
+    df_tmc.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_TMC_{i}.csv", index=False)
+
+    print(f"[Trial {i}] CSVs for classes {class_a}/{class_b} saved.")
+
+for i in range(1, n_trials+1):
+    name = f"MNIST_{class_a}{class_b}_"
+    df_tr = pd.read_csv(f"{save_dir}/{name}train_{i}.csv")
+    df_te = pd.read_csv(f"{save_dir}/{name}test_{i}.csv")
+    df_tmc= pd.read_csv(f"{save_dir}/{name}TMC_{i}.csv")
+
+    X_tr = df_tr.drop(columns=['target','TrueDShap'])
+    y_tr = df_tr['target']
+    true_shap = df_tr['TrueDShap'].values
+    tmc_shap  = df_tmc['TMC_Shap'].values
+
+    X_te = df_te.drop(columns=['target'])
+    y_te = df_te['target']
+
+    # descending removal
+    PerformancePlot_Removal(
+        vals={
+            'True Data Shapley': true_shap,
+            'TMC Shapley':       tmc_shap
+        },
+        X_train=X_tr.values, y_train=y_tr.values,
+        X_test=X_te.values, y_test=y_te.values,
+        a=0.03, b=0.4, ylim=(20,105), order='descending',
+        random_iters=10,
+        save_path=f"{plot_dir}/Removal_MNIST_{class_a}{class_b}_high_{i}.png"
+    )
+
+    # ascending removal
+    PerformancePlot_Removal(
+        vals={
+            'True Data Shapley': true_shap,
+            'TMC Shapley':       tmc_shap
+        },
+        X_train=X_tr.values, y_train=y_tr.values,
+        X_test=X_te.values, y_test=y_te.values,
+        a=0.03, b=0.4, ylim=(20,105), order='ascending',
+        random_iters=10,
+        save_path=f"{plot_dir}/Removal_MNIST_{class_a}{class_b}_low_{i}.png"
+    )
+
+    print(f"[Trial {i}] Plots for classes {class_a}/{class_b} saved.")
+
+
+
+directory = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group09"
+
+for fn in os.listdir(directory):
+    # only consider *.csv
+    if not fn.lower().endswith(".csv"):
+        continue
+
+    # remove the .csv extension
+    base = fn[:-4]  # or: os.path.splitext(fn)[0]
+
+    # if it contains "_train_" remove that piece
+    # e.g. "MNIST_01_train_5" → "MNIST_01_5"
+    new_base = re.sub(r"_train_", "_", base)
+
+    src = os.path.join(directory, fn)
+    dst = os.path.join(directory, new_base)  # no ".csv" here
+
+    print(f"Renaming\n  {src}\n→ {dst}\n")
+    os.rename(src, dst)
 
 
 
