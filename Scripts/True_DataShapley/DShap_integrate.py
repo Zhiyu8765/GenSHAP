@@ -49,7 +49,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     util_dict = load_utilities(args.path_pattern)
     y_test = pd.read_csv(args.y_test).squeeze()
-    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+    baseline = 0
     shapley_vals = compute_shapley(args.N, util_dict, baseline)
     X_train = pd.read_csv(args.X_train)
     y_train = pd.read_csv(args.y_train).squeeze()

@@ -343,8 +343,10 @@ def DataShapley(X, y, X_test, y_test):
 
 'Automatic Generation'
 n_trials = 20
-m = 15
-save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group03'
+m = 10
+a = 1
+b = 2
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/Group28'
 #save_dir = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V3'
 model = 'logistic'
 problem = 'classification'
@@ -355,32 +357,34 @@ directory = './temp'
 iris = load_iris()
 X = pd.DataFrame(iris.data, columns = iris.feature_names)
 y = pd.Series(iris.target, name = 'target')
-X_scaled = pd.DataFrame(StandardScaler().fit_transform(X), columns = X.columns)
-iris_df = pd.concat([X_scaled, y], axis=1)
+iris_df = pd.concat([X, y], axis=1)
 
 for i in range(1, n_trials + 1):
-    iris_1 = iris_df[iris_df["target"] == 1].sample(n = m, random_state = 789+i)
-    iris_2 = iris_df[iris_df["target"] == 2].sample(n = m, random_state = 789+i)
-    iris_12 = pd.concat([iris_1, iris_2], axis = 0)
-    iris_12['target'] = iris_12['target'].map({1:0, 2:1})
+    class_a = iris_df[iris_df["target"] == a].sample(n=m, random_state=i)
+    class_b = iris_df[iris_df["target"] == b].sample(n=m, random_state=i)
+    class_ab = pd.concat([class_a, class_b], axis=0).reset_index(drop=True)
+    class_ab['target'] = class_ab['target'].map({a:0, b:1})
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        iris_12.drop(columns = ['target']),
-        iris_12['target'],
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        class_ab.drop(columns = ['target']),
+        class_ab['target'],
         test_size = 0.5,
-        stratify = iris_12['target'],
+        stratify = class_ab['target'],
         random_state = i
     )
+    scaler = StandardScaler()
+    X_train = pd.DataFrame(scaler.fit_transform(X_train_raw), columns = X_train_raw.columns)
+    X_test = pd.DataFrame(scaler.transform(X_test_raw), columns = X_test_raw.columns)
 
     D_Shap = DataShapley(X_train, y_train, X_test, y_test)
     Iris_train = X_train.copy()
     Iris_train['target'] = y_train.values
     Iris_train['TrueDShap'] = D_Shap
-    Iris_train.to_csv(f'{save_dir}/Iris_12_{i}', index=False)
+    Iris_train.to_csv(f'{save_dir}/Iris_{a}{b}_{i}', index=False)
 
     Iris_test = X_test.copy()
     Iris_test['target'] = y_test.values
-    Iris_test.to_csv(f'{save_dir}/Iris_12_test_{i}', index=False)
+    Iris_test.to_csv(f'{save_dir}/Iris_{a}{b}_test_{i}', index=False)
 
     shapley_model = DShap(X_train.values, y_train.values,
                           X_test.values, y_test.values,
@@ -392,24 +396,27 @@ for i in range(1, n_trials + 1):
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
     Iris_TMC = Iris_train.copy()
     Iris_TMC['TMC_Shap'] = shapley_model.vals_tmc
-    Iris_TMC.to_csv(f'{save_dir}/Iris_12_TMC_{i}', index=False)
+    Iris_TMC.to_csv(f'{save_dir}/Iris_{a}{b}_TMC_{i}', index=False)
     print(f'[Trial {i}] CSV files saved.')
 
+n_trials = 20
+# a = 1
+# b = 2
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V4/Group03"
+    "Datasets/TrainnTestSets_V6/Group28"
 )
 plot_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V4/Group03"
+    "Datasets/TrainnTestSets_V6/Group28"
 )
 os.makedirs(plot_dir, exist_ok=True)
 for i in range(1, n_trials + 1):
-    train_f = os.path.join(save_dir, f"Iris_12_{i}")
-    test_f  = os.path.join(save_dir, f"Iris_12_test_{i}")
-    tmc_f   = os.path.join(save_dir, f"Iris_12_TMC_{i}")
+    train_f = os.path.join(save_dir, f"Iris_{a}{b}_{i}")
+    test_f  = os.path.join(save_dir, f"Iris_{a}{b}_test_{i}")
+    tmc_f   = os.path.join(save_dir, f"Iris_{a}{b}_TMC_{i}")
 
     df_train = pd.read_csv(train_f)
     df_test  = pd.read_csv(test_f)
@@ -418,16 +425,12 @@ for i in range(1, n_trials + 1):
     X_train = df_train.drop(columns=["target", "TrueDShap"], errors="ignore").values
     y_train = df_train["target"].values
     true_shap = df_train["TrueDShap"].values
-
-    if "TMC_Shap" in df_tmc.columns:
-        tmc_shap = df_tmc["TMC_Shap"].values
-    else:
-        tmc_shap = df_train["TMC_Shap"].values
+    tmc_shap = df_tmc["TMC_Shap"].values
 
     X_test = df_test.drop(columns=["target"], errors="ignore").values
     y_test = df_test["target"].values
 
-    out_png_high = os.path.join(plot_dir, f"Removal_Iris_12_high_{i}.png")
+    out_png_high = os.path.join(plot_dir, f"Removal_Iris_{a}{b}_high_{i}.png")
     removal_percents, results = PerformancePlot_Removal(
         vals={
             "True Data Shapley": true_shap,
@@ -436,7 +439,7 @@ for i in range(1, n_trials + 1):
         X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(20, 105),order="descending",
         random_iters=10, save_path=out_png_high,
     )
-    out_png_low = os.path.join(plot_dir, f"Removal_Iris_12_low_{i}.png")
+    out_png_low = os.path.join(plot_dir, f"Removal_Iris_{a}{b}_low_{i}.png")
     removal_percents, results = PerformancePlot_Removal(
         vals={
             "True Data Shapley": true_shap,
@@ -550,8 +553,8 @@ for i in range(1, n_trials + 1):
 #
 
 n_trials = 50
-m = 15
-save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group04'
+m = 10
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/Group29'
 directory = './temp'
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(directory, exist_ok=True)
@@ -559,37 +562,41 @@ os.makedirs(directory, exist_ok=True)
 bc = load_breast_cancer()
 X = pd.DataFrame(bc.data, columns=bc.feature_names)
 y = pd.Series(bc.target, name='target')
-X_scaled = pd.DataFrame(StandardScaler().fit_transform(X), columns=X.columns)
-pca = PCA(n_components=5)
-X_pca = pd.DataFrame(
-    pca.fit_transform(X_scaled),
-    columns=[f'PC{i+1}' for i in range(5)]
-)
-bc_df = pd.concat([X_pca, y], axis=1)
+bc_df = pd.concat([X, y], axis=1)
 bc_0 = bc_df[bc_df.target == 0]
 bc_1 = bc_df[bc_df.target == 1]
 
 for i in range(1, n_trials + 1):
-    # sample 15 from each class
-    bc0 = bc_0.sample(n=m, random_state=30+i)
-    bc1 = bc_1.sample(n=m, random_state=30+i)
-    bc_train = pd.concat([bc0, bc1], axis=0).reset_index(drop=True)
+    bc0 = bc_0.sample(n=m, random_state=i)
+    bc1 = bc_1.sample(n=m, random_state=i)
+    bc = pd.concat([bc0, bc1], axis=0).reset_index(drop=True)
 
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        bc_train.drop(columns='target'), bc_train.target, test_size=0.5, stratify=bc_train.target, random_state=30+i)
-    D_shap = DataShapley(X_tr, y_tr, X_te, y_te)
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        bc.drop(columns='target'), bc.target, test_size=0.5, stratify=bc.target, random_state=i)
+    scaler1 = StandardScaler()
+    X_train_scaled = scaler1.fit_transform(X_train_raw)
+    X_test_scaled = scaler1.transform(X_test_raw)
+    pca = PCA(n_components=5)
+    X_train_pca = pca.fit_transform(X_train_scaled)
+    X_test_pca = pca.transform(X_test_scaled)
+    scaler2 = StandardScaler()
+    X_train = scaler2.fit_transform(X_train_pca)
+    X_test = scaler2.transform(X_test_pca)
+    X_train = pd.DataFrame(X_train, columns=[f'PC{i+1}' for i in range(X_train.shape[1])])
+    X_test = pd.DataFrame(X_test, columns=[f'PC{i+1}' for i in range(X_test.shape[1])])
 
-    out_tr = X_tr.copy()
-    out_tr['target'] = y_tr.values
+    D_shap = DataShapley(X_train, y_train, X_test, y_test)
+
+    out_tr = pd.DataFrame(X_train, columns=[f'PC{i+1}' for i in range(X_train.shape[1])])
+    out_tr['target'] = y_train.values
     out_tr['TrueDShap'] = D_shap
-    out_tr.to_csv(f'{save_dir}/bc_{30+i}.csv', index=False)
-
-    out_te = X_te.copy()
-    out_te['target'] = y_te.values
-    out_te.to_csv(f'{save_dir}/bc_{30+i}_test.csv', index=False)
+    out_tr.to_csv(f'{save_dir}/bc_{i}', index=False)
+    out_te = pd.DataFrame(X_test, columns=[f'PC{i+1}' for i in range(X_test.shape[1])])
+    out_te['target'] = y_test.values
+    out_te.to_csv(f'{save_dir}/bc_test_{i}', index=False)
 
     shapley_model = DShap(
-        X_tr.values, y_tr.values, X_te.values, y_te.values, m,
+        X_train.values, y_train.values, X_test.values, y_test.values, m,
         sources=None, sample_weight=None, model_family='logistic',
         metric='accuracy', overwrite=True, directory=directory,
         seed=250625 + i, max_iter=100, tol=1e-5)
@@ -597,25 +604,26 @@ for i in range(1, n_trials + 1):
 
     out_tr_tmc = out_tr.copy()
     out_tr_tmc['TMC_Shap'] = shapley_model.vals_tmc
-    out_tr_tmc.to_csv(f'{save_dir}/bc_{30+i}_TMC.csv', index=False)
+    out_tr_tmc.to_csv(f'{save_dir}/bc_TMC_{i}', index=False)
 
-    print(f"[Trial {30+i}] CSV files saved.")
+    print(f"[Trial {i}] CSV files saved.")
 
+n_trials = 50
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V4/Group04"
+    "Datasets/TrainnTestSets_V6/Group29"
 )
 plot_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V4/Group04"
+    "Datasets/TrainnTestSets_V6/Group29"
 )
 os.makedirs(plot_dir, exist_ok=True)
 for i in range(1, n_trials + 1):
-    train_f = os.path.join(save_dir, f"bc_{i}.csv")
-    test_f  = os.path.join(save_dir, f"bc_{i}_test.csv")
-    tmc_f   = os.path.join(save_dir, f"bc_{i}_TMC.csv")
+    train_f = os.path.join(save_dir, f"bc_{i}")
+    test_f  = os.path.join(save_dir, f"bc_test_{i}")
+    tmc_f   = os.path.join(save_dir, f"bc_TMC_{i}")
 
     df_train = pd.read_csv(train_f)
     df_test  = pd.read_csv(test_f)
@@ -624,11 +632,7 @@ for i in range(1, n_trials + 1):
     X_train = df_train.drop(columns=["target", "TrueDShap"], errors="ignore").values
     y_train = df_train["target"].values
     true_shap = df_train["TrueDShap"].values
-
-    if "TMC_Shap" in df_tmc.columns:
-        tmc_shap = df_tmc["TMC_Shap"].values
-    else:
-        tmc_shap = df_train["TMC_Shap"].values
+    tmc_shap = df_tmc["TMC_Shap"].values
 
     X_test = df_test.drop(columns=["target"], errors="ignore").values
     y_test = df_test["target"].values
@@ -655,32 +659,19 @@ for i in range(1, n_trials + 1):
     print(f"[Trial {i}] Plot saved.")
 
 
-import os
-import re
-directory = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group04"
-pattern = re.compile(r"^(bc)_(\d+)(?:_(test|TMC))?(\.csv)$", re.IGNORECASE)
-
-for fn in os.listdir(directory):
-    if fn.lower().endswith(".csv"):
-        base, _ = os.path.splitext(fn)     # splits off the “.csv”
-        src = os.path.join(directory, fn)
-        dst = os.path.join(directory, base) # no “.csv” here
-        print(f"Renaming {fn} → {base}")
-        os.rename(src, dst)
-
 
 '''
 True Data shapley values of MNIST 
 '''
-n_trials = 5
-m        = 15
-seed0    = 14
-class_a, class_b = 4, 5
+n_trials = 20
+m        = 10
+seed0    = 1
+class_a, class_b = 9, 0
 
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V4/Group09"
+    "Datasets/TrainnTestSets_V6/Group39"
 )
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 
@@ -692,74 +683,94 @@ import tensorflow as tf
 (X_train_full, y_train_full), (X_test_full, y_test_full) = tf.keras.datasets.mnist.load_data()
 
 train_mask = (y_train_full == class_a) | (y_train_full == class_b)
-test_mask  = (y_test_full  == class_a) | (y_test_full  == class_b)
+# test_mask  = (y_test_full  == class_a) | (y_test_full  == class_b)
 
-X_train_all = X_train_full[train_mask]
-y_train_all = y_train_full[train_mask]
-X_test_all  = X_test_full[test_mask]
-y_test_all  = y_test_full[test_mask]
-
+X_pool = X_train_full[train_mask]
+y_pool = y_train_full[train_mask]
+X_pool = X_pool.reshape(len(X_pool), -1)
+X_pool = pd.DataFrame(X_pool)
+y_pool = pd.Series(y_pool, name='target')
+# y_pool = y_pool.reshape(len(y_pool), -1)
+# X_test_all  = X_test_full[test_mask]
+# # y_test_all  = y_test_full[test_mask]
+#
 # flatten and normalize
-X_train_all = X_train_all.reshape(len(X_train_all), -1)
-X_test_all  = X_test_all.reshape(len(X_test_all),  -1)
-scaler    = StandardScaler()
-X_train_all = scaler.fit_transform(X_train_all)
-X_test_all  = scaler.transform(X_test_all)
-
-# PCA to 10 dimensions
-pca = PCA(n_components=5)
-X_train_all = pca.fit_transform(X_train_all)
-X_test_all  = pca.transform(X_test_all)
-
-# to pandas
-X_train_all = pd.DataFrame(X_train_all)
-y_train_all = pd.Series(y_train_all, name='target')
-X_test_all  = pd.DataFrame(X_test_all)
-y_test_all  = pd.Series(y_test_all,  name='target')
+# X_pool = X_pool.reshape(len(X_pool), -1)
+# X_test_all  = X_pool.reshape(len(X_pool),  -1)
+# scaler    = StandardScaler()
+# X_train_all = scaler.fit_transform(X_train_all)
+# X_test_all  = scaler.transform(X_test_all)
+#
+# # PCA to 10 dimensions
+# pca = PCA(n_components=5)
+# X_train_all = scaler.fit_transform(pca.fit_transform(X_train_all))
+# X_test_all  = scaler.transform(pca.transform(X_test_all))
+#
+# scaler2 = StandardScaler()
+# X_train_all = scaler2.fit_transform(X_train_all)
+# X_test_all  = scaler2.transform(X_test_all)
+#
+# # to pandas
+# X_train_all = pd.DataFrame(X_train_all)
+# y_train_all = pd.Series(y_train_all, name='target')
+# X_test_all  = pd.DataFrame(X_test_all)
+# y_test_all  = pd.Series(y_test_all,  name='target')
 
 
 for i in range(1, n_trials+1):
     rs = seed0 + i
-    idx_a = y_train_all[y_train_all == class_a] \
+    idx_a = y_pool[y_pool == class_a] \
         .sample(n=m, random_state=rs).index
-    idx_b = y_train_all[y_train_all == class_b] \
+    idx_b = y_pool[y_pool == class_b] \
         .sample(n=m, random_state=rs).index
     idx = idx_a.union(idx_b)
-    X_pool = X_train_all.loc[idx].reset_index(drop=True)
-    y_pool = y_train_all.loc[idx].reset_index(drop=True).map({class_a: 0, class_b: 1})
+    X_all = X_pool.loc[idx].reset_index(drop=True)
+    y_all = y_pool.loc[idx].reset_index(drop=True).map({class_a: 0, class_b: 1})
 
-    X_tr, X_te, y_tr, y_te = train_test_split(X_pool, y_pool,test_size=0.5,stratify=y_pool,random_state=rs)
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(X_all, y_all, test_size=0.5, stratify=y_all, random_state=rs)
+    scaler1 = StandardScaler()
+    X_train_scaled = scaler1.fit_transform(X_train_raw)
+    X_test_scaled = scaler1.transform(X_test_raw)
+    pca = PCA(n_components=5)
+    X_train_pca = pca.fit_transform(X_train_scaled)
+    X_test_pca = pca.transform(X_test_scaled)
+    scaler2 = StandardScaler()
+    X_train = scaler2.fit_transform(X_train_pca)
+    X_test = scaler2.transform(X_test_pca)
+    X_train = pd.DataFrame(X_train, columns=[f'PC{i + 1}' for i in range(X_train.shape[1])])
+    X_test = pd.DataFrame(X_test, columns=[f'PC{i + 1}' for i in range(X_test.shape[1])])
 
-    D_Shap = DataShapley(X_tr, y_tr, X_te, y_te)
+    D_Shap = DataShapley(X_train, y_train, X_test, y_test)
 
-    df_tr = X_tr.copy()
-    df_tr['target']    = y_tr.values
+    df_tr = X_train.copy()
+    df_tr['target']    = y_train.values
     df_tr['TrueDShap'] = D_Shap
-    df_tr.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_train_{i}.csv", index=False)
+    df_tr.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_{i}", index=False)
 
-    df_te = X_te.copy()
-    df_te['target'] = y_te.values
-    df_te.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_test_{i}.csv", index=False)
+    df_te = X_test.copy()
+    df_te['target'] = y_test.values
+    df_te.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_test_{i}", index=False)
 
     shapley_model = DShap(
-        X_tr.values, y_tr.values, X_te.values, y_te.values,
+        X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=m, sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=250625+i, max_iter=100, tol=1e-5
+        directory='./temp', seed=250625+i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
     df_tmc = df_tr.copy()
     df_tmc['TMC_Shap'] = shapley_model.vals_tmc
-    df_tmc.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_TMC_{i}.csv", index=False)
+    df_tmc.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_TMC_{i}", index=False)
 
     print(f"[Trial {i}] CSVs for classes {class_a}/{class_b} saved.")
 
+n_trials = 20
 for i in range(1, n_trials+1):
     name = f"MNIST_{class_a}{class_b}_"
-    df_tr = pd.read_csv(f"{save_dir}/{name}train_{i}.csv")
-    df_te = pd.read_csv(f"{save_dir}/{name}test_{i}.csv")
-    df_tmc= pd.read_csv(f"{save_dir}/{name}TMC_{i}.csv")
+    df_tr = pd.read_csv(f"{save_dir}/{name}{i}")
+    df_te = pd.read_csv(f"{save_dir}/{name}test_{i}")
+    df_tmc= pd.read_csv(f"{save_dir}/{name}TMC_{i}")
 
     X_tr = df_tr.drop(columns=['target','TrueDShap'])
     y_tr = df_tr['target']
@@ -797,505 +808,3 @@ for i in range(1, n_trials+1):
 
     print(f"[Trial {i}] Plots for classes {class_a}/{class_b} saved.")
 
-
-
-directory = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V4/Group09"
-
-for fn in os.listdir(directory):
-    # only consider *.csv
-    if not fn.lower().endswith(".csv"):
-        continue
-
-    # remove the .csv extension
-    base = fn[:-4]  # or: os.path.splitext(fn)[0]
-
-    # if it contains "_train_" remove that piece
-    # e.g. "MNIST_01_train_5" → "MNIST_01_5"
-    new_base = re.sub(r"_train_", "_", base)
-
-    src = os.path.join(directory, fn)
-    dst = os.path.join(directory, new_base)  # no ".csv" here
-
-    print(f"Renaming\n  {src}\n→ {dst}\n")
-    os.rename(src, dst)
-
-
-
-'''
-True Data shapley values of MNIST (0&1) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 0) | (y_train == 1)
-test_filter = (y_test == 0) | (y_test == 1)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_0 = df_train[df_train['label'] == 0].sample(n=8, random_state = 505).index
-train_1 = df_train[df_train['label'] == 1].sample(n=8, random_state = 505).index
-test_0 = df_test[df_test['label'] == 0].sample(n=8, random_state = 505).index
-test_1 = df_test[df_test['label'] == 1].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_0], X_train[train_1]])
-y_train = np.concatenate([y_train[train_0], y_train[train_1]])
-X_test = np.concatenate([X_test[test_0], X_test[test_1]])
-y_test = np.concatenate([y_test[test_0], y_test[test_1]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST01 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.5
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_01 = X_train.copy()
-MNIST_01['target'] = y_train.values
-MNIST_01['TrueDShap'] = D_shap_MNIST01
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_01.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_01', index = False)
-MNIST_01_test = X_test.copy()
-MNIST_01_test['target'] = y_test
-(MNIST_01_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_01_test', index = False))
-
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_01_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST01},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(20, 80), order='ascending', random_iters=10, save_path=path)
-
-'''
-True Data shapley values of MNIST (1&2) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 1) | (y_train == 2)
-test_filter = (y_test == 1) | (y_test == 2)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_1 = df_train[df_train['label'] == 1].sample(n=8, random_state = 505).index
-train_2 = df_train[df_train['label'] == 2].sample(n=8, random_state = 505).index
-test_1 = df_test[df_test['label'] == 1].sample(n=8, random_state = 505).index
-test_2 = df_test[df_test['label'] == 2].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_1], X_train[train_2]])
-y_train = np.concatenate([y_train[train_1], y_train[train_2]])
-X_test = np.concatenate([X_test[test_1], X_test[test_2]])
-y_test = np.concatenate([y_test[test_1], y_test[test_2]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST12 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.5
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_12 = X_train.copy()
-MNIST_12['target'] = y_train.values
-MNIST_12['TrueDShap'] = D_shap_MNIST12
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_12.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_12', index = False)
-MNIST_12_test = X_test.copy()
-MNIST_12_test['target'] = y_test
-(MNIST_12_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_12_test', index = False))
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_12_High.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST12},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(10, 50), order='descending', random_iters=10, save_path=path)
-
-
-'''
-True Data shapley values of MNIST (2&3) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 2) | (y_train == 3)
-test_filter = (y_test == 2) | (y_test == 3)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_2 = df_train[df_train['label'] == 2].sample(n=8, random_state = 505).index
-train_3 = df_train[df_train['label'] == 3].sample(n=8, random_state = 505).index
-test_2 = df_test[df_test['label'] == 2].sample(n=8, random_state = 505).index
-test_3 = df_test[df_test['label'] == 3].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_2], X_train[train_3]])
-y_train = np.concatenate([y_train[train_2], y_train[train_3]])
-X_test = np.concatenate([X_test[test_2], X_test[test_3]])
-y_test = np.concatenate([y_test[test_2], y_test[test_3]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST23 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.7
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_23 = X_train.copy()
-MNIST_23['target'] = y_train.values
-MNIST_23['TrueDShap'] = D_shap_MNIST23
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_23.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_23', index = False)
-MNIST_23_test = X_test.copy()
-MNIST_23_test['target'] = y_test
-MNIST_23_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_23_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_23_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST23},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(30, 90), order='ascending', random_iters=10, save_path=path)
-
-'''
-True Data shapley values of MNIST (3&4) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 3) | (y_train == 4)
-test_filter = (y_test == 3) | (y_test == 4)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_3 = df_train[df_train['label'] == 3].sample(n=8, random_state = 505).index
-train_4 = df_train[df_train['label'] == 4].sample(n=8, random_state = 505).index
-test_3 = df_test[df_test['label'] == 3].sample(n=8, random_state = 505).index
-test_4 = df_test[df_test['label'] == 4].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_3], X_train[train_4]])
-y_train = np.concatenate([y_train[train_3], y_train[train_4]])
-X_test = np.concatenate([X_test[test_3], X_test[test_4]])
-y_test = np.concatenate([y_test[test_3], y_test[test_4]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST34 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.6
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_34 = X_train.copy()
-MNIST_34['target'] = y_train.values
-MNIST_34['TrueDShap'] = D_shap_MNIST34
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_34.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_34', index = False)
-MNIST_34_test = X_test.copy()
-MNIST_34_test['target'] = y_test
-MNIST_34_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_34_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_34_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST34},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(40, 70), order='ascending', random_iters=10, save_path=path)
-
-'''
-True Data shapley values of MNIST (4&5) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 4) | (y_train == 5)
-test_filter = (y_test == 4) | (y_test == 5)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_4 = df_train[df_train['label'] == 4].sample(n=8, random_state = 505).index
-train_5 = df_train[df_train['label'] == 5].sample(n=8, random_state = 505).index
-test_4 = df_test[df_test['label'] == 4].sample(n=8, random_state = 505).index
-test_5 = df_test[df_test['label'] == 5].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_4], X_train[train_5]])
-y_train = np.concatenate([y_train[train_4], y_train[train_5]])
-X_test = np.concatenate([X_test[test_4], X_test[test_5]])
-y_test = np.concatenate([y_test[test_4], y_test[test_5]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST45 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.7
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_45 = X_train.copy()
-MNIST_45['target'] = y_train.values
-MNIST_45['TrueDShap'] = D_shap_MNIST45
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_45.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_45', index = False)
-MNIST_45_test = X_test.copy()
-MNIST_45_test['target'] = y_test
-MNIST_45_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_45_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_45_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST45},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(40, 85), order='ascending', random_iters=10, save_path=path)
-
-'''
-True Data shapley values of MNIST (5&6) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 5) | (y_train == 6)
-test_filter = (y_test == 5) | (y_test == 6)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_5 = df_train[df_train['label'] == 5].sample(n=8, random_state = 505).index
-train_6 = df_train[df_train['label'] == 6].sample(n=8, random_state = 505).index
-test_5 = df_test[df_test['label'] == 5].sample(n=8, random_state = 505).index
-test_6 = df_test[df_test['label'] == 6].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_5], X_train[train_6]])
-y_train = np.concatenate([y_train[train_5], y_train[train_6]])
-X_test = np.concatenate([X_test[test_5], X_test[test_6]])
-y_test = np.concatenate([y_test[test_5], y_test[test_6]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST56 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.4
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_56 = X_train.copy()
-MNIST_56['target'] = y_train.values
-MNIST_56['TrueDShap'] = D_shap_MNIST56
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_56.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_56', index = False)
-MNIST_56_test = X_test.copy()
-MNIST_56_test['target'] = y_test
-MNIST_56_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_56_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_56_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST56},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(20, 70), order='ascending', random_iters=10, save_path=path)
-
-
-'''
-True Data shapley values of MNIST (6&7) 
-'''
-import tensorflow as tf
-(X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-train_filter = (y_train == 6) | (y_train == 7)
-test_filter = (y_test == 6) | (y_test == 7)
-x_train = X_train[train_filter]
-y_train = y_train[train_filter]
-x_test = X_test[test_filter]
-y_test = y_test[test_filter]
-df_train = pd.DataFrame({'label': y_train})
-df_test = pd.DataFrame({'label': y_test})
-train_6 = df_train[df_train['label'] == 6].sample(n=8, random_state = 505).index
-train_7 = df_train[df_train['label'] == 7].sample(n=8, random_state = 505).index
-test_6 = df_test[df_test['label'] == 6].sample(n=8, random_state = 505).index
-test_7 = df_test[df_test['label'] == 7].sample(n=8, random_state = 505).index
-X_train = np.concatenate([X_train[train_6], X_train[train_7]])
-y_train = np.concatenate([y_train[train_6], y_train[train_7]])
-X_test = np.concatenate([X_test[test_6], X_test[test_7]])
-y_test = np.concatenate([y_test[test_6], y_test[test_7]])
-X_train, y_train = shuffle(X_train, y_train)
-X_test, y_test = shuffle(X_test, y_test)
-
-'Flatten the images'
-X_train = X_train.reshape(X_train.shape[0], -1)
-X_test = X_test.reshape(X_test.shape[0], -1)
-
-'Standardisation'
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-y_train = np.array(y_train, dtype=np.int64)
-y_test  = np.array(y_test, dtype=np.int64)
-
-'PCA'
-pca = PCA(n_components=10)
-X_train = pca.fit_transform(X_train)
-X_test = pca.transform(X_test)
-X_train = pd.DataFrame(X_train)
-y_train = pd.Series(y_train)
-X_test = pd.DataFrame(X_test)
-y_test = pd.Series(y_test)
-
-D_shap_MNIST67 = DataShapley(X_train, y_train, X_test, y_test, n_jobs = -1)
-model = LogisticRegression(max_iter = 500).fit(X_train, y_train)
-print(model.score(X_test, y_test)) # 0.4
-print(pd.Series(y_train).value_counts())
-print(pd.Series(y_test).value_counts())
-MNIST_67 = X_train.copy()
-MNIST_67['target'] = y_train.values
-MNIST_67['TrueDShap'] = D_shap_MNIST67
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/
-MNIST_67.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_67', index = False)
-MNIST_67_test = X_test.copy()
-MNIST_67_test['target'] = y_test
-MNIST_67_test.to_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/MNIST_67_test', index = False)
-
-' Performance plot (removal based on descending True Data Shapley values) '
-increments = np.arange(0, len(X_train)+1, 10)
-rand_age = np.random.rand(len(X_train))
-#/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250611/
-path = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250623/PerformancePlots/Removal_MNIST_67_Low.png'
-removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': D_shap_MNIST67},
-            X_train=X_train.values, y_train=y_train.values, X_test=X_test.values, y_test=y_test.values,
-            a=0.01, b=0.5, ylim=(20, 70), order='ascending', random_iters=10, save_path=path)

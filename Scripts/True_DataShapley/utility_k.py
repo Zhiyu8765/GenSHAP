@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression
 
 def utility_k(X, y, X_test, y_test, subset_size, output_path):
     N = len(X)
-    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+    baseline = 0.0
     print(f"Generating subsets of size {subset_size} from {N} samples...")
 
     with open(output_path, 'w', newline='') as f:

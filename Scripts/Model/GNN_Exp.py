@@ -11,12 +11,18 @@ import matplotlib.pyplot as plt
 import dgl
 from dgl.nn.pytorch.conv import GINConv
 from torch_geometric.data import Data
-from torch.nn import (Sequential, Linear, LeakyReLU, TransformerEncoder, TransformerEncoderLayer)
+from torch.optim.lr_scheduler import StepLR, LambdaLR
+from torch.nn import (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder, TransformerEncoderLayer, BatchNorm1d)
 from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.linear_model import LogisticRegression
 from sklearn.utils.extmath import randomized_svd
 
-device = torch.device("cpu")
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("Current device:", torch.cuda.current_device())
+    print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
 
 '''
 1. Randomized SVD
@@ -57,39 +63,59 @@ def filp_pe_sign(x, method='l0'):
     return x * sign
 
 def SVD_Transform(A, d=10):
-    U, S, _ = randomized_svd(A, n_components=d, random_state=42) #change to full svd/torch svd
+    U, S, _ = randomized_svd(A, n_components=d, random_state = 42) #change to full svd/torch svd
     X_svd = U * np.sqrt(S)
     X_t = torch.tensor(X_svd, dtype=torch.float)
-    X_t = filp_pe_sign(X_t, method='sum') # l0 (positive) / sum
+    X_t = filp_pe_sign(X_t, method='sum')  # l0 (positive) / sum
     return X_t.numpy()
 
+# def y_SVDTrans(y_raw, d=15):
+#     y = np.array(y_raw)
+#     sim_matrix = (y[:, None] == y[None, :]).astype(float)
+#     U, S, _ = randomized_svd(sim_matrix, n_components = d, random_state = 42)
+#     y_svd = U * np.sqrt(S)
+#     y_svd = torch.tensor(y_svd, dtype=torch.float)
+#     y_svd = filp_pe_sign(y_svd, method='sum')  # l0 (positive) / sum
+#     return y_svd.numpy()
 
 '''
 2. Graph Construction
 '''
 C_List = [0.25, 0.5, 1, 2, 4]
 
-def build_graph(X_raw, phi, total_util, c, d = 10):
+def build_graph(X_raw, phi, total_util, y_raw, c, d = 10):
+    # X_raw = np.concatenate([X_raw, y_raw.reshape(-1, 1)], axis = 1)
     D = pairwise_distances(X_raw, metric='euclidean')
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
     X_svd = SVD_Transform(A, d = d)
+    #y_svd = y_SVDTrans(y_raw, d = d)
+    X_feat = X_svd
+    # X_feat = np.concatenate([X_svd, y_svd], axis = 1)
+    y = np.asarray(y_raw).ravel()
+    A_y = (y[:, None] == y[None, :]).astype(float)
 
-    N = A.shape[0]
+    N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
-    edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis = 1), dtype = torch.long)
-    w = np.concatenate([A[src, dst], A[src, dst]])
-    edge_attr = torch.tensor(w, dtype = torch.float).unsqueeze(1)
+    edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis = 1), dtype = torch.long, device=device)
+    # w = np.concatenate([A[src, dst], A[src, dst]])
+    w_feat = A[src, dst]
+    w_label = A_y[src, dst]
+    # edge_attr = torch.tensor(w, dtype = torch.float).unsqueeze(1)
+    edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype = torch.float, device=device).unsqueeze(1)
+    edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype = torch.float, device=device).unsqueeze(1)
 
     data = Data(
-        x = torch.tensor(X_svd, dtype = torch.float),
+        x = torch.tensor(X_feat, dtype = torch.float, device=device),
         edge_index = edge_index,
-        edge_attr = edge_attr
+        edge_attr_feat = edge_attr_feat,
+        edge_attr_label = edge_attr_label
     )
-    data.X_raw = torch.tensor(X_raw, dtype = torch.float)
-    data.tmc = torch.tensor(phi, dtype = torch.float)
-    data.total_util = torch.tensor(total_util, dtype = torch.float)
+    data.X_raw = torch.tensor(X_raw, dtype = torch.float, device=device)
+    data.tmc = torch.tensor(phi, dtype = torch.float, device=device)
+    data.total_util = torch.tensor(total_util, dtype = torch.float, device=device)
+    data.y = torch.tensor(y_raw, dtype = torch.long, device=device)
 
     return data
 
@@ -100,16 +126,23 @@ def build_graph(X_raw, phi, total_util, c, d = 10):
 def load_and_preprocess(train_csv, test_csv, d=10):
     df_train = pd.read_csv(train_csv)
     X_raw = pd.get_dummies(df_train.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+    # Attached target variable
+    y_raw = df_train['target'].to_numpy().astype(int)
     phi = df_train['TrueDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
+    X_test = pd.get_dummies(df_test.drop(columns=['target'])).astype(float).to_numpy()
     y_test = df_test['target'].to_numpy()
     maj = pd.Series(y_test).mode().iloc[0]
-    baseline = (y_test == maj).astype(float)
-    total_util = baseline.mean()
+    # baseline = (y_test == maj).astype(float)
+    # baseline_acc = baseline.mean()
+    lr_full = LogisticRegression(max_iter=100, random_state=42)
+    lr_full.fit(X_raw, y_raw)
+    model_acc = lr_full.score(X_test, y_test)
+    total_util = model_acc
 
     data_list = []
     for c in C_List:
-        data = build_graph(X_raw, phi, total_util, d = d, c = c)
+        data = build_graph(X_raw, phi, total_util, y_raw, d = d, c = c)
         data_list.append(data)
 
     return data_list
@@ -120,19 +153,22 @@ def load_and_preprocess(train_csv, test_csv, d=10):
 '''
 ''' Version A. Without BatchNorm '''
 class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 512, out_channels = 1, heads = 64):
+    def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
         super().__init__()
         def mlp(i, o):
             return Sequential(Linear(i, o), LeakyReLU(), Linear(o, o))
 
         # 5 Parallel GIN Branches
+        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
+        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
         self.branches = torch.nn.ModuleList()
         for _ in C_List:
             convs = torch.nn.ModuleList()
-            for layer in range(3):
+            for layer in range(5):
                 convs.append(
                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
-                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True)
+                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
+                            activation = LeakyReLU())
                 )
             self.branches.append(convs)
 
@@ -140,41 +176,60 @@ class GINShap(torch.nn.Module):
 
         # GT (via TransformerEncoder)
         d_concat = hidden_channels * len(C_List) # 64 or 128 * 5 = 640
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.1, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
+        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
+        self.gt = TransformerEncoder(encoder_layer, num_layers = 5)
 
         # Z
-        self.Z = Sequential(Linear(d_concat, hidden_channels), LeakyReLU())
+        self.Z = Sequential(Linear(d_concat, hidden_channels),LeakyReLU())
 
         # MLP (widen by hidden_channels * 2)
         self.out = Sequential(
             Linear(hidden_channels + 2, hidden_channels * 2),
-            LeakyReLU(),
-            Linear(hidden_channels * 2, hidden_channels * 2),
-            LeakyReLU(),
-            Linear(hidden_channels * 2, out_channels)
+            ReLU(),
+            Linear(hidden_channels * 2, 100),
+            ReLU(),
+            Linear(100, out_channels)
         )
 
     def forward(self, data_list):
         data = data_list[0].to(device)
         x0 = data.x # Extract nodes
         ei = data.edge_index # Extract edge indices
-        ew = data.edge_attr.view(-1) # Extract edge weights for DGL
+        # ew = data.edge_attr.view(-1) # Extract edge weights for DGL
 
         # DGL Graph
         g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
-        g.edata['w'] = ew
+        # g.edata['w'] = ew
 
         # Parallel GIN
         output_GIN = []
-        for convs, gdata in zip(self.branches, data_list):
+        # for convs, gdata in zip(self.branches, data_list):
+        #     node_input = gdata.x.to(device)
+        #     for conv in convs:
+        #         node_input = conv(g, node_input , edge_weight = g.edata['w'])
+        #     output_GIN.append(node_input)
+        # output_GIN = torch.cat(output_GIN, dim = 1)
+        for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
             node_input = gdata.x.to(device)
+            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)  # (E,)
+            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)  # (E,)
+
+            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
+            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label  # (E,)
+
+            g = dgl.graph(
+                (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
+                num_nodes=node_input.size(0),
+                device=device
+            )
+            g.edata['w'] = edge_weight
+
             for conv in convs:
-                node_input = conv(g, node_input , edge_weight = g.edata['w'])
+                node_input = conv(g, node_input, edge_weight=g.edata['w'])
             output_GIN.append(node_input)
-        output_GIN = torch.cat(output_GIN, dim = 1)
 
         # Skip-Connection
+        output_GIN = torch.cat(output_GIN, dim = 1)
         output_skip = output_GIN + self.skip_lin(x0)
 
         # GT
@@ -185,7 +240,7 @@ class GINShap(torch.nn.Module):
         # H
         output_h = self.Z(output_gt)
 
-        # total utility + (N/1000) -> MLP
+        # total utility + (N/10) -> MLP
         N = output_h.size(0)
         total_util = data.total_util
         utility_vec = total_util.expand(N, 1)
@@ -224,11 +279,14 @@ class GINShap(torch.nn.Module):
 #     neg_j = idx_j[mask]
 #     return -F.logsigmoid(phi_hat[pos_i] - phi_hat[neg_j]).mean()
 
-def train(model, dataset_graphs, epochs=200, lr=1e-4):
+def train(model, dataset_graphs, epochs=200, lr=1e-5):
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr) # adamw
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = epochs) # cosine
+    #scheduler = StepLR(optimizer, step_size=1000, gamma=0.1)
+    lr_lambda = lambda epoch: 1.0 if epoch < 1000 else 0.1
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
     loss_history = []
 
     for ep in range(1, epochs + 1):
@@ -239,15 +297,15 @@ def train(model, dataset_graphs, epochs=200, lr=1e-4):
             phi_hat = model(data_list).view(-1)
             phi_true = data_list[0].tmc.to(device)
 
-            # mean_true = phi_true.mean()
-            # std_true = phi_true.std(unbiased=False) + 1e-10
-            # phi_true_scaled = (phi_true - mean_true) / std_true
-            #
-            # mean_hat = phi_hat.mean()
-            # std_hat = phi_hat.std(unbiased=False) + 1e-10
-            # phi_hat_scaled = (phi_hat - mean_hat) / std_hat
+            # # Add l1 normalisation to ensure equal contributions of datasets with different number of points
+            # phi_true_scaled = phi_true/phi_true.sum()
+            # phi_hat_scaled = phi_hat / phi_hat.sum()
+            # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction = 'sum')
 
-            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction = 'mean')
+            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
+            # loss_MSE = F.l1_loss(phi_hat, phi_true, reduction='sum')/len(phi_true)
+            # loss_MSE = F.mse_loss(F.softmax(phi_hat, dim=0), F.softmax(phi_true, dim=0))
+            # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction='sum') / len(phi_true)
             #loss_Rank = BPR_loss(phi_hat_scaled, phi_true_scaled)
             #loss = (1-alpha) * loss_MSE + alpha * loss_Rank
             loss = loss_MSE
@@ -258,12 +316,12 @@ def train(model, dataset_graphs, epochs=200, lr=1e-4):
         optimizer.zero_grad()
         L.backward()
         optimizer.step()
-        #scheduler.step()
+        scheduler.step()
 
         if ep % 5 == 0:
-            #current_lr = scheduler.get_last_lr()[0]
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f'Epoch {ep:3d} | total loss {L:.8f}| LR: {current_lr:.2e}')
+            current_lr = scheduler.get_last_lr()[0]
+            #current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {ep:3d} | total loss {L:.16f}| LR: {current_lr:.2e}')
 
     return loss_history
 
@@ -278,12 +336,13 @@ def predict(model, data_list):
         return model(data_list).squeeze().cpu().numpy()
 
 
+
 ######################################################################################################
 ######################################################################################################
 #########################################  Experiments ###############################################
 
 '''
-EXP 1. Iris (Subsets of label 1 & 2 for testing)
+EXP 1
 '''
 
 'A. Implementation'
@@ -492,9 +551,12 @@ def find_train_test_pairs(directory):
     return pairs
 
 if __name__ == '__main__':
-    BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03/Train'
-    BASE11 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03/Test'
-    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03/'
+    # BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Train'
+    # BASE11 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test'
+    # PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250807/Trial01/'
+    BASE00 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Train'
+    BASE11 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test'
+    PATH_OUT = '/tmp/pycharm_project_236/Outputs/250821/Trial01/'
 
     base_dirs = [BASE00]
     all_pairs = []
@@ -502,8 +564,8 @@ if __name__ == '__main__':
         all_pairs += find_train_test_pairs(bd)
 
     Train_list, Test_list = zip(*all_pairs)
-    holdout_train_csv = os.path.join(BASE11, 'MNIST_45_2')
-    holdout_test_csv  = os.path.join(BASE11, 'MNIST_45_test_2')
+    holdout_train_csv = os.path.join(BASE11, 'MNIST_17_1')
+    holdout_test_csv  = os.path.join(BASE11, 'MNIST_17_test_1')
 
     # load everything
     data_list    = [load_and_preprocess(train, test)
@@ -511,24 +573,25 @@ if __name__ == '__main__':
     data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
 
     # build & train
-    gnn = GINShap(in_channels=10, hidden_channels=512, heads=64)
-    loss_history = train(gnn, data_list, epochs=200, lr=1e-4)
+    gnn = GINShap(in_channels=10, hidden_channels=256, heads=8)
+    loss_history = train(gnn, data_list, epochs=3000, lr=1e-5)
 
     # plot optimisation curve
     plt.figure(figsize=(6,4))
-    plt.plot(loss_history, label='Training Loss')
-    plt.xlabel('Epochs'); plt.ylabel('Loss')
-    plt.title('Optimisation Curve'); plt.legend(); plt.grid(True)
+    plt.plot(np.log(loss_history), label='Training Loss')
+    plt.xlabel('Epochs'); plt.ylabel('log(Loss)')
+    plt.title('Optimisation Curve(Log)'); plt.legend(); plt.grid(True)
     plt.savefig(os.path.join(PATH_OUT, 'Optimisation_Curve.png'))
 
     # holdout predictions
     preds = predict(gnn, data_holdout)
+
     print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
 
     # save holdout
     df_holdout = pd.read_csv(holdout_train_csv)
     df_holdout['Pred_Shap'] = preds
-    df_holdout.to_csv(os.path.join(PATH_OUT, 'MNIST_45_2_Pred.csv'), index=False)
+    df_holdout.to_csv(os.path.join(PATH_OUT, 'MNIST_17_1_Pred.csv'), index=False)
 
     # save train preds
     for train_csv, data in zip(Train_list, data_list):
@@ -542,22 +605,26 @@ if __name__ == '__main__':
 'Removal Plots'
 #df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_test_2')
 #df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test')
-#df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2/Iris_12_test')
-df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03/Test/MNIST_45_test_2')
+df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
+# df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
 X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
 y_test = df_test['target'].to_numpy()
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_TMC_2')
-df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03/Test/MNIST_45_TMC_2')
+# df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
+# df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
-#df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2/Iris_12_TMC')
-X_train = pd.get_dummies(df_train.drop(
-                columns=['target','TrueDShap','TMC_Shap'])).to_numpy()
+df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
+df_tmc = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
+# X_train = pd.get_dummies(df_train.drop(
+#                 columns=['target','TrueDShap','TMC_Shap'])).to_numpy()
+X_train = pd.get_dummies(df_tmc.drop(
+                columns=['TMC_Shap'])).to_numpy()
 y_train = df_train['target'].to_numpy()
 True_Shap = df_train['TrueDShap'].to_numpy()
-TMC_Shap = df_train['TMC_Shap'].to_numpy()
+TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
 Pred_Shap = preds
-PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03', 'MNIST45_Pred_Low.png')
-#PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250623/Trial01', 'Iris12Pred_Low.png')
+PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250814/Trial02/', 'MNIST17_1_High.png')
+#PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250715/Trial04', 'MNIST17_1_Low.png')
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
     vals={'True Data Shapley': True_Shap,
@@ -566,14 +633,14 @@ removal_percentages, results = PerformancePlot_Removal(
     X_train = X_train, y_train = y_train,
     X_test = X_test, y_test = y_test,
     a = 0.05, b = 0.4, ylim = (40,105),
-    order = 'ascending', random_iters = 10,
+    order = 'descending', random_iters = 10,
     save_path = PERF_PATH
 )
 
 
 'Distribution/Magnitude Comparison'
-GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial03'
-#GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
+# GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250806/Trial01'
+GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250814/Trial02/'
 true_vals = np.asarray(True_Shap)
 tmc_vals  = np.asarray(TMC_Shap)
 pred_vals = np.asarray(Pred_Shap)
@@ -614,8 +681,8 @@ plt.scatter(true_vals, tmc_vals,
             s=200, color='tab:orange', alpha=0.6, edgecolors='k',
             linewidth=0.5, label='TMC Shapley')
 all_min = min(true_vals.min(), pred_vals.min(), tmc_vals.min())
-all_max = max(true_vals.max(), pred_vals.max(), tmc_vals.max())
-plt.plot([all_min, all_max], [all_min, all_max],
+all_max = max(true_vals.max(), pred_vals.max(), tmc_vals.max(
+plt.plot([all_min-0.02, all_max+0.02], [all_min-0.02, all_max+0.02],
          '--k', linewidth=1.5, label='y = x')
 
 plt.xlabel('True TMC Shapley Values', fontsize=10, weight='bold')
@@ -632,8 +699,8 @@ plt.show()
 
 
 'Check Train Sets'
-BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250710/Trial01'
-#BASE2 = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
+# BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250806/Trial01'
+BASE2 = '/tmp/pycharm_project_236/Outputs/250814/Trial02'
 # Train_list = [
 #             (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_01_2_Pred.csv'),
 #             (f'{BASE2}/Iris_01_3_Pred.csv'), (f'{BASE2}/Iris_01_4_Pred.csv'),
@@ -646,25 +713,26 @@ BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley
 #             (f'{BASE2}/Iris_01_17_Pred.csv'), (f'{BASE2}/Iris_01_18_Pred.csv'),
 #             (f'{BASE2}/Iris_01_19_Pred.csv'), (f'{BASE2}/Iris_01_20_Pred.csv'),
 #             (f'{BASE2}/Iris_01_21_Pred.csv'), (f'{BASE2}/Iris_01_22_Pred.csv'),
-#             (f'{BASE2}/Iris_01_23_Pred.csv'), (f'{BASE2}/Iris_01_24_Pred.csv'),
-#             (f'{BASE2}/Iris_01_25_Pred.csv'), (f'{BASE2}/Iris_01_26_Pred.csv'),
-#             (f'{BASE2}/Iris_01_27_Pred.csv'), (f'{BASE2}/Iris_01_28_Pred.csv'),
-#             (f'{BASE2}/Iris_01_29_Pred.csv'), (f'{BASE2}/Iris_01_30_Pred.csv'),
-#             (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/Iris_02_2_Pred.csv'),
-#             (f'{BASE2}/Iris_02_3_Pred.csv'), (f'{BASE2}/Iris_02_4_Pred.csv'),
-#             (f'{BASE2}/Iris_02_5_Pred.csv'), (f'{BASE2}/Iris_02_6_Pred.csv'),
-#             (f'{BASE2}/Iris_02_7_Pred.csv'), (f'{BASE2}/Iris_02_8_Pred.csv'),
-#             (f'{BASE2}/Iris_02_9_Pred.csv'), (f'{BASE2}/Iris_02_10_Pred.csv'),
-#             (f'{BASE2}/Iris_02_11_Pred.csv'), (f'{BASE2}/Iris_02_12_Pred.csv'),
-#             (f'{BASE2}/Iris_02_13_Pred.csv'), (f'{BASE2}/Iris_02_14_Pred.csv'),
-#             (f'{BASE2}/Iris_02_15_Pred.csv'), (f'{BASE2}/Iris_02_16_Pred.csv'),
-#             (f'{BASE2}/Iris_02_17_Pred.csv'), (f'{BASE2}/Iris_02_18_Pred.csv'),
-#             (f'{BASE2}/Iris_02_19_Pred.csv'), (f'{BASE2}/Iris_02_20_Pred.csv')
+#             (f'{BASE2}/Iris_01_23_Pred.csv), (f'{BASE2}/Iris_01_24_Pred.csv'),
+#             (f'{BASE2}/Iris_01_25_Pred.csv), (f'{BASE2}/Iris_01_26_Pred.csv'),
+#             (f'{BASE2}/Iris_01_27_Pred.csv), (f'{BASE2}/Iris_01_28_Pred.csv'),
+#             (f'{BASE2}/Iris_01_29_Pred.csv), (f'{BASE2}/Iris_01_30_Pred.csv'),
+#             (f'{BASE2}/Iris_02_1_Pred.csv), (f'{BASE2}/Iris_02_2_Pred.csv'),
+#             (f'{BASE2}/Iris_02_3_Pred.csv), (f'{BASE2}/Iris_02_4_Pred.csv'),
+#             (f'{BASE2}/Iris_02_5_Pred.csv), (f'{BASE2}/Iris_02_6_Pred.csv'),
+#             (f'{BASE2}/Iris_02_7_Pred.csv), (f'{BASE2}/Iris_02_8_Pred.csv'),
+#             (f'{BASE2}/Iris_02_9_Pred.csv), (f'{BASE2}/Iris_02_10_Pred.csv'),
+#             (f'{BASE2}/Iris_02_11_Pred.csv), (f'{BASE2}/Iris_02_12_Pred.csv'),
+#             (f'{BASE2}/Iris_02_13_Pred.csv), (f'{BASE2}/Iris_02_14_Pred.csv'),
+#             (f'{BASE2}/Iris_02_15_Pred.csv), (f'{BASE2}/Iris_02_16_Pred.csv'),
+#             (f'{BASE2}/Iris_02_17_Pred.csv), (f'{BASE2}/Iris_02_18_Pred.csv'),
+#             (f'{BASE2}/Iris_02_19_Pred.csv), (f'{BASE2}/Iris_02_20_Pred.csv')
 # ]
 Train_list = [
     (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
-    (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/MNIST_23_11_Pred.csv'),
-    (f'{BASE2}/Iris_12_1_Pred.csv'), (f'{BASE2}/MNIST_01_11_Pred.csv'),
+    (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/MNIST_23_1_Pred.csv'),
+    (f'{BASE2}/Iris_12_1_Pred.csv'), (f'{BASE2}/MNIST_01_1_Pred.csv'),
+    (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/MNIST_12_1_Pred.csv')
 ]
 # Train_list = [
 #     (f'{BASE2}/bc_1.csv_Pred.csv'), (f'{BASE2}/bc_2.csv_Pred.csv'),
@@ -1064,7 +1132,7 @@ plt.figure(figsize = (10, 6))
 
 plt.stem(x_s, TMC_Shap_AIDS_Pred, linefmt = 'tab:blue', markerfmt = '', basefmt = '', label = 'Predicted Shapley Values')
 plt.axhline(avg_s, color = 'tab:blue', linestyle = '--', linewidth = 2, label = 'Average Predicted Values')
-plt.stem(x_1, TMC_train3, linefmt = 'tab:orange', markerfmt = '', basefmt = '', label = 'TMC Shapley Values')
+plt.stem(x_1, TMC_true, linefmt = 'tab:orange', markerfmt = '', basefmt = '', label = 'TMC Shapley Values')
 plt.axhline(avg_1, color = 'tab:orange', linestyle = '--', linewidth = 2, label = 'Average TMC Shapley Values')
 
 plt.xlabel('Training Data Index', fontsize = 14, weight = 'bold')
@@ -1115,3 +1183,4 @@ for file, label in zip(files, labels):
     plt.title(f'Distribution of TrueDShap ({label})')
     plt.tight_layout()
     plt.show()
+
