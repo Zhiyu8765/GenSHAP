@@ -18,6 +18,8 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.utils.extmath import randomized_svd
 
+# from Scripts.Additional_Scripts.Permutation_Shapley import Per_DShap
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("CUDA available:", torch.cuda.is_available())
 if torch.cuda.is_available():
@@ -62,7 +64,7 @@ def filp_pe_sign(x, method='l0'):
     sign = torch.sign(diff)
     return x * sign
 
-def SVD_Transform(A, d=10):
+def SVD_Transform(A, d=40):
     U, S, _ = randomized_svd(A, n_components=d, random_state = 42) #change to full svd/torch svd
     X_svd = U * np.sqrt(S)
     X_t = torch.tensor(X_svd, dtype=torch.float)
@@ -83,7 +85,7 @@ def SVD_Transform(A, d=10):
 '''
 C_List = [0.25, 0.5, 1, 2, 4]
 
-def build_graph(X_raw, phi, total_util, y_raw, c, d = 10):
+def build_graph(X_raw, phi, total_util, y_raw, c, d = 40):
     # X_raw = np.concatenate([X_raw, y_raw.reshape(-1, 1)], axis = 1)
     D = pairwise_distances(X_raw, metric='euclidean')
     sigma = np.mean(D)
@@ -123,16 +125,18 @@ def build_graph(X_raw, phi, total_util, y_raw, c, d = 10):
 '''
 3. Data Preprocessing
 '''
-def load_and_preprocess(train_csv, test_csv, d=10):
+def load_and_preprocess(train_csv, test_csv, d=40):
     df_train = pd.read_csv(train_csv)
-    X_raw = pd.get_dummies(df_train.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+    #X_raw = pd.get_dummies(df_train.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
+    X_raw = pd.get_dummies(df_train.drop(columns=['target','PerDShap'])).astype(float).to_numpy()
     # Attached target variable
     y_raw = df_train['target'].to_numpy().astype(int)
-    phi = df_train['TrueDShap'].to_numpy()
+    # phi = df_train['TrueDShap'].to_numpy()
+    phi = df_train['PerDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
     X_test = pd.get_dummies(df_test.drop(columns=['target'])).astype(float).to_numpy()
     y_test = df_test['target'].to_numpy()
-    maj = pd.Series(y_test).mode().iloc[0]
+    # maj = pd.Series(y_test).mode().iloc[0]
     # baseline = (y_test == maj).astype(float)
     # baseline_acc = baseline.mean()
     lr_full = LogisticRegression(max_iter=100, random_state=42)
@@ -164,7 +168,7 @@ class GINShap(torch.nn.Module):
         self.branches = torch.nn.ModuleList()
         for _ in C_List:
             convs = torch.nn.ModuleList()
-            for layer in range(5):
+            for layer in range(3):
                 convs.append(
                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
@@ -177,7 +181,7 @@ class GINShap(torch.nn.Module):
         # GT (via TransformerEncoder)
         d_concat = hidden_channels * len(C_List) # 64 or 128 * 5 = 640
         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 5)
+        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 
         # Z
         self.Z = Sequential(Linear(d_concat, hidden_channels),LeakyReLU())
@@ -279,14 +283,14 @@ class GINShap(torch.nn.Module):
 #     neg_j = idx_j[mask]
 #     return -F.logsigmoid(phi_hat[pos_i] - phi_hat[neg_j]).mean()
 
-def train(model, dataset_graphs, epochs=200, lr=1e-5):
+def train(model, dataset_graphs, epochs=500, lr=1e-5):
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr) # adamw
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = epochs) # cosine
     #scheduler = StepLR(optimizer, step_size=1000, gamma=0.1)
-    lr_lambda = lambda epoch: 1.0 if epoch < 1000 else 0.1
-    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+    # lr_lambda = lambda epoch: 1.0 if epoch < 50 else 0.1
+    # scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
     loss_history = []
 
     for ep in range(1, epochs + 1):
@@ -296,18 +300,21 @@ def train(model, dataset_graphs, epochs=200, lr=1e-5):
         for data_list in dataset_graphs:
             phi_hat = model(data_list).view(-1)
             phi_true = data_list[0].tmc.to(device)
-
             # # Add l1 normalisation to ensure equal contributions of datasets with different number of points
             # phi_true_scaled = phi_true/phi_true.sum()
             # phi_hat_scaled = phi_hat / phi_hat.sum()
             # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction = 'sum')
 
-            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
-            # loss_MSE = F.l1_loss(phi_hat, phi_true, reduction='sum')/len(phi_true)
+            # loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
             # loss_MSE = F.mse_loss(F.softmax(phi_hat, dim=0), F.softmax(phi_true, dim=0))
             # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction='sum') / len(phi_true)
-            #loss_Rank = BPR_loss(phi_hat_scaled, phi_true_scaled)
-            #loss = (1-alpha) * loss_MSE + alpha * loss_Rank
+            # loss_Rank = BPR_loss(phi_hat_scaled, phi_true_scaled)
+            # loss = (1-alpha) * loss_MSE + alpha * loss_Rank
+
+            # loss_MSE = F.l1_loss(phi_hat, phi_true, reduction='sum')
+            # loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
+            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean')
+
             loss = loss_MSE
             losses.append(loss)
         L = torch.stack(losses).mean()
@@ -316,11 +323,11 @@ def train(model, dataset_graphs, epochs=200, lr=1e-5):
         optimizer.zero_grad()
         L.backward()
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
         if ep % 5 == 0:
-            current_lr = scheduler.get_last_lr()[0]
-            #current_lr = optimizer.param_groups[0]['lr']
+            # current_lr = scheduler.get_last_lr()[0]
+            current_lr = optimizer.param_groups[0]['lr']
             print(f'Epoch {ep:3d} | total loss {L:.16f}| LR: {current_lr:.2e}')
 
     return loss_history
@@ -551,12 +558,12 @@ def find_train_test_pairs(directory):
     return pairs
 
 if __name__ == '__main__':
-    # BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Train'
-    # BASE11 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test'
-    # PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250807/Trial01/'
-    BASE00 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Train'
-    BASE11 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test'
-    PATH_OUT = '/tmp/pycharm_project_236/Outputs/250821/Trial01/'
+    BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialD_Iris/Train'
+    BASE11 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialD_Iris/Test'
+    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250909/Trial06/'
+    # BASE00 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Train'
+    # BASE11 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test'
+    # PATH_OUT = '/tmp/pycharm_project_236/Outputs/250821/Trial01/'
 
     base_dirs = [BASE00]
     all_pairs = []
@@ -564,8 +571,8 @@ if __name__ == '__main__':
         all_pairs += find_train_test_pairs(bd)
 
     Train_list, Test_list = zip(*all_pairs)
-    holdout_train_csv = os.path.join(BASE11, 'MNIST_17_1')
-    holdout_test_csv  = os.path.join(BASE11, 'MNIST_17_test_1')
+    holdout_train_csv = os.path.join(BASE11, 'Iris_02_21')
+    holdout_test_csv  = os.path.join(BASE11, 'Iris_02_test_21')
 
     # load everything
     data_list    = [load_and_preprocess(train, test)
@@ -573,8 +580,8 @@ if __name__ == '__main__':
     data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
 
     # build & train
-    gnn = GINShap(in_channels=10, hidden_channels=256, heads=8)
-    loss_history = train(gnn, data_list, epochs=3000, lr=1e-5)
+    gnn = GINShap(in_channels=40, hidden_channels=64, heads=2)
+    loss_history = train(gnn, data_list, epochs=2000, lr=1e-6)
 
     # plot optimisation curve
     plt.figure(figsize=(6,4))
@@ -591,7 +598,7 @@ if __name__ == '__main__':
     # save holdout
     df_holdout = pd.read_csv(holdout_train_csv)
     df_holdout['Pred_Shap'] = preds
-    df_holdout.to_csv(os.path.join(PATH_OUT, 'MNIST_17_1_Pred.csv'), index=False)
+    df_holdout.to_csv(os.path.join(PATH_OUT, 'Iris_02_21_Pred.csv'), index=False)
 
     # save train preds
     for train_csv, data in zip(Train_list, data_list):
@@ -605,61 +612,72 @@ if __name__ == '__main__':
 'Removal Plots'
 #df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_test_2')
 #df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test')
-df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
-# df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
+# df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialD_Iris/Test/Iris_02_test_21')
 X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
 y_test = df_test['target'].to_numpy()
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_TMC_2')
-# df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
-# df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
+df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialD_Iris/Test/Iris_02_TMC_21')
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialD_Iris/Test/Iris_02_21')
 #df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
-df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
-df_tmc = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
+# df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
+# df_tmc = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
 # X_train = pd.get_dummies(df_train.drop(
 #                 columns=['target','TrueDShap','TMC_Shap'])).to_numpy()
-X_train = pd.get_dummies(df_tmc.drop(
-                columns=['TMC_Shap'])).to_numpy()
+X_train = pd.get_dummies(df_train.drop(
+                columns=['target','PerDShap'])).to_numpy()
 y_train = df_train['target'].to_numpy()
-True_Shap = df_train['TrueDShap'].to_numpy()
+# True_Shap = df_train['TrueDShap'].to_numpy()
 TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+Per_DShap = df_train['PerDShap'].to_numpy()
 Pred_Shap = preds
-PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250814/Trial02/', 'MNIST17_1_High.png')
+# df_holdout = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250907/Trial01/Iris_02_1_Pred.csv')
+# preds = df_holdout['Pred_Shap']
+# PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250826/Trial01/', 'MNIST17_1_High.png')
 #PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250715/Trial04', 'MNIST17_1_Low.png')
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250909/Trial06/', 'Iris_02_21_Low.png')
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 removal_percentages, results = PerformancePlot_Removal(
-    vals={'True Data Shapley': True_Shap,
+    vals={ 'Permuted Data Shapley': Per_DShap,
+        # 'True Data Shapley': True_Shap,
           'TMC Data Shapley': TMC_Shap,
           'Predicted Shapley': Pred_Shap},
     X_train = X_train, y_train = y_train,
     X_test = X_test, y_test = y_test,
     a = 0.05, b = 0.4, ylim = (40,105),
-    order = 'descending', random_iters = 10,
+    order = 'ascending', random_iters = 10,
     save_path = PERF_PATH
 )
 
 
 'Distribution/Magnitude Comparison'
-# GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250806/Trial01'
-GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250814/Trial02/'
-true_vals = np.asarray(True_Shap)
+GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250909/Trial06'
+# GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250814/Trial02/'
+# true_vals = np.asarray(True_Shap)
 tmc_vals  = np.asarray(TMC_Shap)
+per_vals = np.asarray(Per_DShap)
 pred_vals = np.asarray(Pred_Shap)
-mean_true = true_vals.mean()
+# mean_true = true_vals.mean()
 mean_tmc  = tmc_vals.mean()
+mean_per = per_vals.mean()
 mean_pred = pred_vals.mean()
-N = len(true_vals)
+# N = len(true_vals)
+N = len(Per_DShap)
 indices = np.arange(N)
 width = 0.25
 plt.figure(figsize=(10,6))
-plt.bar(indices - width, true_vals,  width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
+# plt.bar(indices - width, true_vals,  width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
 plt.bar(indices, tmc_vals, width, label='TMC Shapley', color='tab:orange',edgecolor='k', alpha=0.7)
+plt.bar(indices, per_vals, width, label='Permuted Shapley', color='tab:purple',edgecolor='k', alpha=0.7)
 plt.bar(indices + width, pred_vals, width, label='Predicted Shapley',  color='tab:green', edgecolor='k', alpha=0.7)
-plt.plot(indices, [mean_true]*N, linestyle='--', linewidth=2, label=f'Average True Shapley Values ({mean_true:.3f})',   color='tab:blue')
+# plt.plot(indices, [mean_true]*N, linestyle='--', linewidth=2, label=f'Average True Shapley Values ({mean_true:.3f})',   color='tab:blue')
 plt.plot(indices, [mean_tmc]*N, linestyle='--', linewidth=2, label=f'Average TMC Shapley Values ({mean_tmc:.3f})',     color='tab:orange')
+plt.plot(indices, [mean_per]*N, linestyle='--', linewidth=2, label=f'Average Permuted Shapley Values ({mean_per:.3f})', color='tab:purple')
 plt.plot(indices, [mean_pred]*N, linestyle='--', linewidth=2, label=f'Average Predicted Shapley Values ({mean_pred:.3f})',color='tab:green')
 plt.xlabel('Sample Index', fontsize=12, weight='bold')
 plt.ylabel('Shapley Value', fontsize=12, weight='bold')
-plt.title('Comparison of True, TMC & Predicted Shapley Values', fontsize=14, weight='bold')
+# plt.title('Comparison of True, TMC & Predicted Shapley Values', fontsize=14, weight='bold')
+plt.title('Comparison of TMC & Permuted & Predicted Shapley Values', fontsize=14, weight='bold')
 plt.xticks(indices)
 plt.grid(axis='y', linestyle='--', alpha=0.4)
 plt.legend(fontsize=11)
@@ -669,25 +687,32 @@ plt.savefig(out_path, dpi=500)
 plt.show()
 
 'Linear Plot'
-true_vals = np.asarray(True_Shap)
+# true_vals = np.asarray(True_Shap)
 pred_vals = np.asarray(Pred_Shap)
 tmc_vals  = np.asarray(TMC_Shap)
+per_vals = np.asarray(Per_DShap)
 
 plt.figure(figsize=(8,8))
-plt.scatter(true_vals, pred_vals,
-            s=200, color='tab:blue', alpha=0.6, edgecolors='k',
-            linewidth=0.5, label='Predicted Shapley')
-plt.scatter(true_vals, tmc_vals,
+# plt.scatter(true_vals, pred_vals,
+#             s=200, color='tab:blue', alpha=0.6, edgecolors='k',
+#             linewidth=0.5, label='Predicted Shapley')
+plt.scatter(per_vals, tmc_vals,
             s=200, color='tab:orange', alpha=0.6, edgecolors='k',
             linewidth=0.5, label='TMC Shapley')
-all_min = min(true_vals.min(), pred_vals.min(), tmc_vals.min())
-all_max = max(true_vals.max(), pred_vals.max(), tmc_vals.max(
-plt.plot([all_min-0.02, all_max+0.02], [all_min-0.02, all_max+0.02],
-         '--k', linewidth=1.5, label='y = x')
+plt.scatter(per_vals, pred_vals,
+            s=200, color='tab:purple', alpha=0.6, edgecolors='k',
+            linewidth=0.5, label='Predicted vs Permuted Shapley')
+# all_min = min(true_vals.min(), pred_vals.min(), tmc_vals.min())
+# all_max = max(true_vals.max(), pred_vals.max(), tmc_vals.max())
+all_min = min(per_vals.min(),tmc_vals.mean(), pred_vals.min())
+all_max = max(per_vals.max(),tmc_vals.mean(), pred_vals.max())
+plt.plot([all_min - 0.005, all_max + 0.005], [all_min-0.005, all_max+0.005],'--k', linewidth=1.5, label='y = x')
 
-plt.xlabel('True TMC Shapley Values', fontsize=10, weight='bold')
-plt.ylabel('Predicted TMC Shapley Values', fontsize=10, weight='bold')
-plt.title('True vs Predicted & TMC Shapley Values', fontsize=12, weight='bold')
+# plt.xlabel('True TMC Shapley Values', fontsize=10, weight='bold')
+plt.xlabel('Permuted Shapley Value', fontsize=12, weight='bold')
+plt.ylabel('Predicted Shapley Values', fontsize=10, weight='bold')
+# plt.title('True vs Predicted & TMC Shapley Values', fontsize=12, weight='bold')
+plt.title('Permuted vs TMC & Predicted Shapley Values', fontsize=14, weight='bold')
 plt.grid(True, linestyle='--', alpha=0.5)
 plt.legend(fontsize=10)
 
@@ -699,8 +724,8 @@ plt.show()
 
 
 'Check Train Sets'
-# BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250806/Trial01'
-BASE2 = '/tmp/pycharm_project_236/Outputs/250814/Trial02'
+BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250909/Trial06'
+# BASE2 = '/tmp/pycharm_project_236/Outputs/250815/Trial02'
 # Train_list = [
 #             (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_01_2_Pred.csv'),
 #             (f'{BASE2}/Iris_01_3_Pred.csv'), (f'{BASE2}/Iris_01_4_Pred.csv'),
@@ -729,11 +754,16 @@ BASE2 = '/tmp/pycharm_project_236/Outputs/250814/Trial02'
 #             (f'{BASE2}/Iris_02_19_Pred.csv), (f'{BASE2}/Iris_02_20_Pred.csv')
 # ]
 Train_list = [
-    (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
-    (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/MNIST_23_1_Pred.csv'),
-    (f'{BASE2}/Iris_12_1_Pred.csv'), (f'{BASE2}/MNIST_01_1_Pred.csv'),
-    (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/MNIST_12_1_Pred.csv')
+    (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_12_1_Pred.csv')
+    # (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
+    # (f'{BASE2}/MNIST_12_1_Pred.csv'), (f'{BASE2}/MNIST_45_1_Pred.csv'),
 ]
+# Train_list = [
+#     (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
+#     (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/MNIST_23_1_Pred.csv'),
+#     (f'{BASE2}/Iris_12_1_Pred.csv'), (f'{BASE2}/MNIST_01_1_Pred.csv'),
+#     (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/MNIST_12_1_Pred.csv')
+# ]
 # Train_list = [
 #     (f'{BASE2}/bc_1.csv_Pred.csv'), (f'{BASE2}/bc_2.csv_Pred.csv'),
 #     (f'{BASE2}/bc_3.csv_Pred.csv'), (f'{BASE2}/bc_4.csv_Pred.csv'),
@@ -769,7 +799,8 @@ Train_list = [
 
 for train in Train_list:
     df = pd.read_csv(train)
-    true_vals = df['TrueDShap']
+    # true_vals = df['TrueDShap']
+    true_vals = df['PerDShap']
     True_Shap = true_vals.to_numpy().reshape(-1, 1).flatten()
     true_vals = np.asarray(True_Shap)
 

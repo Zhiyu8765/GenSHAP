@@ -196,3 +196,194 @@ out_path = os.path.join(GRAPH_DIR, 'LinearCompare_MNIST_17_1.png')
 plt.savefig(out_path, dpi=500)
 plt.tight_layout()
 plt.show()
+
+
+'20250831 Experiment: Investigating convergence of Permutation-Based Data Shapley'
+### Import packages
+import os
+import re
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+' For Calculation of Permutation Based Data Shapley Values'
+### Check Working Directory
+import sys
+print(sys.executable)
+import os
+os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+#os.chdir('/tmp/pycharm_project_236/DataShapley')
+sys.path.append(os.getcwd())
+#sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+
+### Package and Environments for TMC_Shapley
+#%load_ext autoreload
+#%autoreload 2
+#import shap_utils
+#importlib.reload(shap_utils)
+import numpy as np
+import pandas as pd
+from sklearn.utils import shuffle
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.datasets import load_iris, load_breast_cancer
+from sklearn.model_selection import train_test_split
+
+#%matplotlib inline
+MEM_DIR = '../'
+
+
+### Read in data
+BASE = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test'
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
+X_train = pd.get_dummies(df_train.drop(
+                columns=['target','TrueDShap'])).to_numpy()
+y_train = df_train['target'].to_numpy()
+True_Shap = df_train['TrueDShap'].to_numpy()
+X_test = pd.get_dummies(df_test.drop(
+                columns=['target'])).to_numpy()
+y_test = df_test['target'].to_numpy()
+
+### Compute TMC Shapley values
+Per_Shap = DataShapley_permutation(X_train, y_train, X_test, y_test, n_permutations=5000,
+    model_builder=lambda: LogisticRegression(max_iter=100, n_jobs=1),
+    random_state=0, progress=True)
+
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+PERF_PATH = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250831/Per_Shap/Trial05/MNIST_17_1_Low'
+removal_percentages, results = PerformancePlot_Removal(
+    vals={'True Data Shapley': True_Shap,
+          'Permutation-Based Data Shapley': Per_Shap},
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (40,105),
+    order = 'ascending', random_iters = 10,
+    save_path = PERF_PATH
+)
+
+'Distribution Comparison'
+GRAPH_DIR = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250831/Per_Shap/Trial05/'
+true_vals = np.asarray(True_Shap)
+per_vals  = np.asarray(Per_Shap)
+mean_true = true_vals.mean()
+mean_per  = per_vals.mean()
+N = len(true_vals)
+indices = np.arange(N)
+width = 0.25
+plt.figure(figsize=(10,6))
+plt.bar(indices - width, true_vals,  width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
+plt.bar(indices, per_vals, width, label='Permutation-Based Shapley', color='tab:orange',edgecolor='k', alpha=0.7)
+plt.plot(indices, [mean_true]*N, linestyle='--', linewidth=2, label=f'Average True Shapley Values ({mean_true:.3f})',   color='tab:blue')
+plt.plot(indices, [mean_per]*N, linestyle='--', linewidth=2, label=f'Average Permutation-Based Shapley Values ({mean_per:.3f})',     color='tab:orange')
+plt.xlabel('Sample Index', fontsize=12, weight='bold')
+plt.ylabel('Shapley Value', fontsize=12, weight='bold')
+plt.title('Comparison of True, Permutation-Based Shapley Values', fontsize=14, weight='bold')
+plt.xticks(indices)
+plt.grid(axis='y', linestyle='--', alpha=0.4)
+plt.legend(fontsize=11)
+plt.tight_layout()
+out_path = os.path.join(GRAPH_DIR, 'Shapley_compare_MNIST_17_1.png')
+plt.savefig(out_path, dpi=500)
+plt.show()
+
+
+'Linear Plot'
+true_vals = np.asarray(True_Shap)
+per_vals  = np.asarray(Per_Shap)
+
+plt.figure(figsize=(8,8))
+plt.scatter(true_vals, per_vals,
+            s=200, color='tab:orange', alpha=0.6, edgecolors='k',
+            linewidth=0.5, label='Permutation-Based Shapley')
+all_min = min(true_vals.min(), per_vals.min())
+all_max = max(true_vals.max(), per_vals.max())
+plt.plot([all_min-0.02, all_max+0.02], [all_min-0.02, all_max+0.02],
+         '--k', linewidth=1.5, label='y = x')
+
+plt.xlabel('True TMC Shapley Values', fontsize=10, weight='bold')
+plt.ylabel('Permutation-Based Shapley Values', fontsize=10, weight='bold')
+plt.title('True vs Predicted & Permutation-Based Shapley Values', fontsize=12, weight='bold')
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.legend(fontsize=10)
+
+out_path = os.path.join(GRAPH_DIR, 'LinearCompare_MNIST_17_1.png')
+plt.savefig(out_path, dpi=500)
+plt.tight_layout()
+plt.show()
+
+
+
+'20250908 Removal plots of Test Sets'
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_test_1')
+X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
+y_test = df_test['target'].to_numpy()
+df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_TMC_1')
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_1')
+X_train = pd.get_dummies(df_train.drop(
+                columns=['target','PerDShap'])).to_numpy()
+y_train = df_train['target'].to_numpy()
+# True_Shap = df_train['TrueDShap'].to_numpy()
+TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+Per_DShap = df_train['PerDShap'].to_numpy()
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/', 'MNIST_17_1_Low.png')
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+removal_percentages, results = PerformancePlot_Removal(
+    vals={ 'Permuted Data Shapley': Per_DShap,
+        # 'True Data Shapley': True_Shap,
+          'TMC Data Shapley': TMC_Shap},
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (80,105),
+    order = 'ascending', random_iters = 10,
+    save_path = PERF_PATH
+)
+
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialA_Iris/Test/Iris_02_test_1')
+X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
+y_test = df_test['target'].to_numpy()
+df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialA_Iris/Test/Iris_02_TMC_1')
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialA_Iris/Test/Iris_02_1')
+X_train = pd.get_dummies(df_train.drop(
+                columns=['target','PerDShap'])).to_numpy()
+y_train = df_train['target'].to_numpy()
+# True_Shap = df_train['TrueDShap'].to_numpy()
+TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+Per_DShap = df_train['PerDShap'].to_numpy()
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialA_Iris/Test/', 'Iris_02_1_High.png')
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+removal_percentages, results = PerformancePlot_Removal(
+    vals={ 'Permuted Data Shapley': Per_DShap,
+        # 'True Data Shapley': True_Shap,
+          'TMC Data Shapley': TMC_Shap},
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (80,105),
+    order = 'descending', random_iters = 10,
+    save_path = PERF_PATH
+)
+
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialC_Iris/Test/Iris_02_test_1')
+X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
+y_test = df_test['target'].to_numpy()
+df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialC_Iris/Test/Iris_02_TMC_1')
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialC_Iris/Test/Iris_02_1')
+X_train = pd.get_dummies(df_train.drop(
+                columns=['target','PerDShap'])).to_numpy()
+y_train = df_train['target'].to_numpy()
+# True_Shap = df_train['TrueDShap'].to_numpy()
+TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+Per_DShap = df_train['PerDShap'].to_numpy()
+PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialC_Iris/Test/', 'Iris_02_1_Low.png')
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+removal_percentages, results = PerformancePlot_Removal(
+    vals={ 'Permuted Data Shapley': Per_DShap,
+        # 'True Data Shapley': True_Shap,
+          'TMC Data Shapley': TMC_Shap},
+    X_train = X_train, y_train = y_train,
+    X_test = X_test, y_test = y_test,
+    a = 0.05, b = 0.4, ylim = (80,105),
+    order = 'ascending', random_iters = 10,
+    save_path = PERF_PATH
+)

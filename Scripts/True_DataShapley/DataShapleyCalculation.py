@@ -70,7 +70,8 @@ MEM_DIR = '../'
 def DataShapley(X, y, X_test, y_test):
     N = len(X)
     DShap = np.zeros(N)
-    baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+    # baseline = max(np.mean(y_test == c) for c in np.unique(y_test))
+    baseline = 0.0
     utility_cache = {}
 
     def compute_utility(key, subset_indices):
@@ -664,14 +665,14 @@ for i in range(1, n_trials + 1):
 True Data shapley values of MNIST 
 '''
 n_trials = 20
-m        = 10
+m        = 15
 seed0    = 1
-class_a, class_b = 9, 0
+class_a, class_b = 1, 7
 
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V6/Group39"
+    "Datasets/TrainnTestSets_V7/MNIST_17_15pts"
 )
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 
