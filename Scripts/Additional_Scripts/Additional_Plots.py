@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.utils.extmath import randomized_svd
 import numpy as np
 
-from Scripts.Model.GNN_Exp import PERF_PATH
+from Scripts.Model.GNN_DShap import PERF_PATH
 
 # File paths
 files = [
