@@ -3,34 +3,34 @@
 '''
 import os
 import re
+import dgl
+import torch
 import numpy as np
 import pandas as pd
-import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-import dgl
+
 from dgl.nn.pytorch.conv import GINConv
 from torch_geometric.data import Data
-from torch.optim.lr_scheduler import StepLR, LambdaLR
-from torch.nn import (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder,
-                      TransformerEncoderLayer, BatchNorm1d, LayerNorm)
+from torch.optim.lr_scheduler import StepLR, LambdaLR, OneCycleLR
+from torch.nn import (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)
 from sklearn.metrics.pairwise import pairwise_distances
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.utils.extmath import randomized_svd
+from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
-# from Scripts.Additional_Scripts.Permutation_Shapley import Per_DShap
-
+'Check Availability of GPU'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("CUDA available:", torch.cuda.is_available())
 if torch.cuda.is_available():
-    print("Current device:", torch.cuda.current_device())
-    print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+    print("Device:", torch.cuda.get_device_name(torch.cuda.current_device()))
+
 
 '''
 1. Randomized SVD
 '''
-def filp_pe_sign(x, method='l0'):
+'Flip Sign'
+def flip_pe_sign(x, method='sum'):
     assert method in ['none', 'pos', 'sum', 'l1', 'l2', 'linf', 'random']
     if method == 'none':
         return x
@@ -65,58 +65,49 @@ def filp_pe_sign(x, method='l0'):
     sign = torch.sign(diff)
     return x * sign
 
-def SVD_Transform(A, d=40):
-    U, S, _ = randomized_svd(A, n_components=d, random_state = 42) #change to full svd/torch svd
-    X_svd = U * np.sqrt(S)
+def SVD_Transform(A, d=30):
+    # U, S, _ = randomized_svd(A, n_components=d, random_state = 23) #change to full svd/torch svd
+    # X_svd = U * np.sqrt(S)
+    U, S, Vt = np.linalg.svd(A, full_matrices=False)
+    X_svd = U[:, :d] * np.sqrt(S[:d])
     X_t = torch.tensor(X_svd, dtype=torch.float)
-    X_t = filp_pe_sign(X_t, method='sum')  # l0 (positive) / sum
+    X_t = flip_pe_sign(X_t, method='sum')  # l0 (positive) / sum
     return X_t.numpy()
 
-# def y_SVDTrans(y_raw, d=15):
-#     y = np.array(y_raw)
-#     sim_matrix = (y[:, None] == y[None, :]).astype(float)
-#     U, S, _ = randomized_svd(sim_matrix, n_components = d, random_state = 42)
-#     y_svd = U * np.sqrt(S)
-#     y_svd = torch.tensor(y_svd, dtype=torch.float)
-#     y_svd = filp_pe_sign(y_svd, method='sum')  # l0 (positive) / sum
-#     return y_svd.numpy()
 
 '''
 2. Graph Construction
 '''
-C_List = [0.25, 0.5, 1, 2, 4]
+C_List = [0.25, 0.5, 1, 2, 4, 8]
 
-def build_graph(X_raw, phi, total_util, y_raw, c, d = 40):
-    # X_raw = np.concatenate([X_raw, y_raw.reshape(-1, 1)], axis = 1)
+def build_graph(X_raw, y_raw, phi, total_util, c, d = 30):
     D = pairwise_distances(X_raw, metric='euclidean')
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
     X_svd = SVD_Transform(A, d = d)
-    #y_svd = y_SVDTrans(y_raw, d = d)
-    X_feat = X_svd
-    # X_feat = np.concatenate([X_svd, y_svd], axis = 1)
-    y = np.asarray(y_raw).ravel()
-    A_y = (y[:, None] == y[None, :]).astype(float)
+    y = np.asarray(y_raw).ravel() # Ensure 1D array
+    A_y = (y[:, None] == y[None, :]).astype(float) # Label similarity matrix
 
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
     edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis = 1), dtype = torch.long, device=device)
-    # w = np.concatenate([A[src, dst], A[src, dst]])
+
+    # Extract upper-triangle pairs
     w_feat = A[src, dst]
     w_label = A_y[src, dst]
-    # edge_attr = torch.tensor(w, dtype = torch.float).unsqueeze(1)
     edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype = torch.float, device=device).unsqueeze(1)
     edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype = torch.float, device=device).unsqueeze(1)
 
     data = Data(
-        x = torch.tensor(X_feat, dtype = torch.float, device=device),
+        x = torch.tensor(X_svd, dtype = torch.float, device=device),
         edge_index = edge_index,
         edge_attr_feat = edge_attr_feat,
         edge_attr_label = edge_attr_label
     )
+    # Extra attributes
     data.X_raw = torch.tensor(X_raw, dtype = torch.float, device=device)
-    data.tmc = torch.tensor(phi, dtype = torch.float, device=device)
+    data.phi = torch.tensor(phi, dtype = torch.float, device=device)
     data.total_util = torch.tensor(total_util, dtype = torch.float, device=device)
     data.y = torch.tensor(y_raw, dtype = torch.long, device=device)
 
@@ -126,28 +117,23 @@ def build_graph(X_raw, phi, total_util, y_raw, c, d = 40):
 '''
 3. Data Preprocessing
 '''
-def load_and_preprocess(train_csv, test_csv, d=40):
+def load_and_preprocess(train_csv, test_csv, d=30):
     df_train = pd.read_csv(train_csv)
-    #X_raw = pd.get_dummies(df_train.drop(columns=['target','TrueDShap'])).astype(float).to_numpy()
-    X_raw = pd.get_dummies(df_train.drop(columns=['target','PerDShap'])).astype(float).to_numpy()
-    # Attached target variable
+    X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
     y_raw = df_train['target'].to_numpy().astype(int)
-    # phi = df_train['TrueDShap'].to_numpy()
     phi = df_train['PerDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
-    X_test = pd.get_dummies(df_test.drop(columns=['target'])).astype(float).to_numpy()
+    X_test = df_test.drop(columns=['target']).astype(float).to_numpy()
     y_test = df_test['target'].to_numpy()
-    # maj = pd.Series(y_test).mode().iloc[0]
-    # baseline = (y_test == maj).astype(float)
-    # baseline_acc = baseline.mean()
-    lr_full = LogisticRegression(max_iter=100, random_state=42)
+
+    lr_full = LogisticRegression(max_iter=100, random_state=23)
     lr_full.fit(X_raw, y_raw)
     model_acc = lr_full.score(X_test, y_test)
     total_util = model_acc
 
-    data_list = []
+    data_list = [] # length = 5
     for c in C_List:
-        data = build_graph(X_raw, phi, total_util, y_raw, d = d, c = c)
+        data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c)
         data_list.append(data)
 
     return data_list
@@ -156,31 +142,121 @@ def load_and_preprocess(train_csv, test_csv, d=40):
 '''
 4. Model Construction
 '''
-# ''' Version A. Without BatchNorm '''
+'Version A: With LayerNorm & 5 separate conv stacks'
+class GINShap(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels = 128, out_channels = 1, heads = 4):
+        super().__init__()
+        def mlp(i, o):
+            return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
+
+        # 5 Parallel GIN Branches
+        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
+        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
+        self.branches = torch.nn.ModuleList()
+        for _ in C_List:
+            convs = torch.nn.ModuleList()
+            for layer in range(3):
+                convs.append(
+                    GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
+                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
+                            activation = ReLU())
+                )
+            self.branches.append(convs)  # length = 6
+
+        self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
+
+        # GT (via TransformerEncoder)
+        d_concat = hidden_channels * len(C_List)
+        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
+        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
+
+        # Z
+        self.Z = Sequential(Linear(d_concat, hidden_channels),ReLU())
+
+        # MLP (widen by hidden_channels * 2)
+        self.out = Sequential(
+            Linear(hidden_channels + 2, hidden_channels * 2),
+            ReLU(),
+            Linear(hidden_channels * 2, 100),
+            ReLU(),
+            Linear(100, out_channels)
+        )
+
+    def forward(self, data_list):
+        data = data_list[0].to(device)
+        x0 = data.x # Extract nodes
+        ei = data.edge_index # Extract edge indices
+
+        # DGL Graph
+        g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
+
+        # Parallel GIN
+        output_GIN = []
+
+        for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
+            node_input = gdata.x.to(device)
+            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)
+            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)
+
+            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
+            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label
+
+            g = dgl.graph((gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
+                            num_nodes=node_input.size(0), device=device)
+            g.edata['w'] = edge_weight
+
+            for conv in convs:
+                node_input = conv(g, node_input, edge_weight=g.edata['w'])
+            output_GIN.append(node_input)
+
+        # Skip-Connection
+        output_GIN = torch.cat(output_GIN, dim = 1)
+        output_skip = output_GIN + self.skip_lin(x0)
+
+        # GT
+        output_skip = output_skip.unsqueeze(0)
+        output_gt = self.gt(output_skip)
+        output_gt = output_gt.squeeze(0)
+
+        # H
+        output_h = self.Z(output_gt)
+
+        # total utility + (N/10) -> MLP
+        N = output_h.size(0)
+        total_util = data.total_util
+        utility_vec = total_util.expand(N, 1)
+        NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
+        output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
+
+        return self.out(output_final)
+
+
+# 'Version B: With LayerNorm & 1 shared conv stack'
 # class GINShap(torch.nn.Module):
 #     def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
 #         super().__init__()
 #         def mlp(i, o):
-#             return Sequential(Linear(i, o), LeakyReLU(), Linear(o, o))
+#             return Sequential(Linear(i, o), LayerNorm(o), LeakyReLU(), Linear(o, o))
 #
 #         # 5 Parallel GIN Branches
 #         self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
 #         self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
-#         self.branches = torch.nn.ModuleList()
-#         for _ in C_List:
-#             convs = torch.nn.ModuleList()
-#             for layer in range(3):
-#                 convs.append(
-#                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
-#                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
-#                             activation = LeakyReLU())
-#                 )
-#             self.branches.append(convs)
+#         self.shared_convs = torch.nn.ModuleList([
+#             GINConv(mlp(in_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#             GINConv(mlp(hidden_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#             GINConv(mlp(hidden_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#         ])
 #
 #         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
 #
 #         # GT (via TransformerEncoder)
-#         d_concat = hidden_channels * len(C_List) # 64 or 128 * 5 = 640
+#         d_concat = hidden_channels * len(C_List)
 #         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
 #         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 #
@@ -200,21 +276,14 @@ def load_and_preprocess(train_csv, test_csv, d=40):
 #         data = data_list[0].to(device)
 #         x0 = data.x # Extract nodes
 #         ei = data.edge_index # Extract edge indices
-#         # ew = data.edge_attr.view(-1) # Extract edge weights for DGL
 #
 #         # DGL Graph
 #         g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
-#         # g.edata['w'] = ew
 #
 #         # Parallel GIN
 #         output_GIN = []
-#         # for convs, gdata in zip(self.branches, data_list):
-#         #     node_input = gdata.x.to(device)
-#         #     for conv in convs:
-#         #         node_input = conv(g, node_input , edge_weight = g.edata['w'])
-#         #     output_GIN.append(node_input)
-#         # output_GIN = torch.cat(output_GIN, dim = 1)
-#         for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
+#
+#         for idx, gdata in enumerate(data_list):
 #             node_input = gdata.x.to(device)
 #             edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)  # (E,)
 #             edge_attr_label = gdata.edge_attr_label.view(-1).to(device)  # (E,)
@@ -222,14 +291,10 @@ def load_and_preprocess(train_csv, test_csv, d=40):
 #             weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
 #             edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label  # (E,)
 #
-#             g = dgl.graph(
-#                 (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
-#                 num_nodes=node_input.size(0),
-#                 device=device
-#             )
+#             g = dgl.graph((gdata.edge_index[0], gdata.edge_index[1]),
+#                           num_nodes=node_input.size(0), device=device)
 #             g.edata['w'] = edge_weight
-#
-#             for conv in convs:
+#             for conv in self.shared_convs:
 #                 node_input = conv(g, node_input, edge_weight=g.edata['w'])
 #             output_GIN.append(node_input)
 #
@@ -253,104 +318,6 @@ def load_and_preprocess(train_csv, test_csv, d=40):
 #         output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
 #
 #         return self.out(output_final)
-
-''' Version B. With BatchNorm '''
-class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
-        super().__init__()
-        def mlp(i, o):
-            # return Sequential(Linear(i, o), BatchNorm1d(o), LeakyReLU(), Linear(o, o))
-            return Sequential(Linear(i, o), LayerNorm(o), LeakyReLU(), Linear(o, o))
-        # 5 Parallel GIN Branches
-        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.branches = torch.nn.ModuleList()
-        for _ in C_List:
-            convs = torch.nn.ModuleList()
-            for layer in range(5):
-                convs.append(
-                    GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
-                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
-                            activation = LeakyReLU())
-                )
-            self.branches.append(convs)
-
-        self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
-
-        # GT (via TransformerEncoder)
-        d_concat = hidden_channels * len(C_List) # 64 or 128 * 5 = 640
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 5)
-
-        # Z
-        self.Z = Sequential(Linear(d_concat, hidden_channels), LeakyReLU())
-
-        # MLP (widen by hidden_channels * 2)
-        self.out = Sequential(
-            Linear(hidden_channels + 2, hidden_channels * 2),
-            ReLU(),
-            Linear(hidden_channels * 2, 100),
-            ReLU(),
-            Linear(100, out_channels)
-        )
-
-    def forward(self, data_list):
-        data = data_list[0].to(device)
-        x0 = data.x # Extract nodes
-        ei = data.edge_index # Extract edge indices
-        # ew = data.edge_attr.view(-1) # Extract edge weights for DGL
-
-        # DGL Graph
-        g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
-        # g.edata['w'] = ew
-
-        # Parallel GIN
-        output_GIN = []
-        # for convs, gdata in zip(self.branches, data_list):
-        #     node_input = gdata.x.to(device)
-        #     for conv in convs:
-        #         node_input = conv(g, node_input , edge_weight = g.edata['w'])
-        #     output_GIN.append(node_input)
-        # output_GIN = torch.cat(output_GIN, dim = 1)
-        for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
-            node_input = gdata.x.to(device)
-            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)  # (E,)
-            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)  # (E,)
-
-            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
-            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label  # (E,)
-
-            g = dgl.graph(
-                (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
-                num_nodes=node_input.size(0),
-                device=device
-            )
-            g.edata['w'] = edge_weight
-
-            for conv in convs:
-                node_input = conv(g, node_input, edge_weight=g.edata['w'])
-            output_GIN.append(node_input)
-
-        # Skip-Connection
-        output_GIN = torch.cat(output_GIN, dim = 1)
-        output_skip = output_GIN + self.skip_lin(x0)
-
-        # GT
-        output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*5)
-        output_gt = self.gt(output_skip)
-        output_gt = output_gt.squeeze(0)
-
-        # H
-        output_h = self.Z(output_gt)
-
-        # total utility + (N/10) -> MLP
-        N = output_h.size(0)
-        total_util = data.total_util
-        utility_vec = total_util.expand(N, 1)
-        NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
-        output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
-
-        return self.out(output_final)
 
 
 '''
@@ -381,63 +348,341 @@ class GINShap(torch.nn.Module):
 #     pos_i = idx_i[mask]
 #     neg_j = idx_j[mask]
 #     return -F.logsigmoid(phi_hat[pos_i] - phi_hat[neg_j]).mean()
+# ' Version 0. Constant LR'
+# def train(model, dataset_graphs, epochs=1000, lr=3e-5, weight_decay = 1e-7,
+#           base_test_dir: str = None, holdout_bases: list = None, out_dir: str = None,
+#           ckpt_every: int = 10, checkpoint_dir: str = None,
+#           use_onecycle: bool = False, mx_lr: float = None, onecycle_kwargs: dict = None):
+#     model.to(device)
+#
+#     if out_dir: os.makedirs(out_dir, exist_ok = True)
+#     if checkpoint_dir is None and out_dir:
+#         checkpoint_dir = os.path.join(out_dir, 'checkpoints')
+#     if checkpoint_dir: os.makedirs(checkpoint_dir, exist_ok = True)
+#
+#     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay = weight_decay) # adamw
+#
+#     loss_history = []
+#     per_epoch_rows = []
+#     sparse_ckpt_rows = []
+#
+#     for ep in range(1, epochs + 1):
+#         model.train()
+#         losses = []
+#
+#         for data_list in dataset_graphs:
+#             phi_hat = model(data_list).view(-1)
+#             phi_true = data_list[0].phi.to(device)
+#             loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean')
+#
+#             loss = loss_MSE
+#             losses.append(loss)
+#         L = torch.stack(losses).mean()
+#         loss_history.append(L.item())
+#
+#         optimizer.zero_grad()
+#         L.backward()
+#         optimizer.step()
+#         # scheduler.step()
+#
+#         if ep % 5 == 0:
+#             # current_lr = scheduler.get_last_lr()[0]
+#             current_lr = optimizer.param_groups[0]['lr']
+#             print(f'Epoch {ep:3d} | total loss {L:.16f}| LR: {current_lr:.2e}')
+#
+#         avg_mse = None
+#         if holdout_bases and base_test_dir:
+#             model.eval()
+#             row = {"epoch": ep}
+#             with torch.no_grad():
+#                 mses = []
+#                 for base in holdout_bases:
+#                     p = _mk_paths(base_test_dir, base)
+#                     dl = load_and_preprocess(p['train_like'], p['test'])
+#                     pred = model(dl).view(-1)
+#                     phi_t = dl[0].phi.to(device).view(-1)
+#                     m = F.mse_loss(pred, phi_t, reduction='mean').item()
+#                     row[base] = m
+#                     mses.append(m)
+#                 if mses:
+#                     avg_mse = float(np.mean(mses))
+#                     row["avg_mse"] = avg_mse
+#                     per_epoch_rows.append(row)
+#                     print(f'>>> Test avg MSE @ {ep}: {avg_mse:.6f}')
+#
+#
+#         if ckpt_every and (ep % ckpt_every == 0) and checkpoint_dir:
+#             path = os.path.join(checkpoint_dir, f"model_ep{ep}.pt")
+#             torch.save({
+#                 "epoch": ep,
+#                 "model_state": model.state_dict(),
+#                 "optimizer_state": optimizer.state_dict(),
+#                 "loss_train_mse": L.item(),
+#                 "avg_test_mse": avg_mse,
+#             }, path)
+#             print("saved checkpoint ➜", path)
+#             if avg_mse is not None:
+#                 sparse_ckpt_rows.append({"epoch": ep, "avg_mse": avg_mse})
+#
+#     if checkpoint_dir:
+#         final_path = os.path.join(checkpoint_dir, f"model_final_ep{epochs}.pt")
+#         torch.save({
+#             "epoch": epochs,
+#             "model_state": model.state_dict(),
+#             "optimizer_state": optimizer.state_dict(),
+#             "loss_train_mse": loss_history[-1],
+#             "avg_test_mse": (per_epoch_rows[-1]["avg_mse"] if per_epoch_rows else None),
+#         }, final_path)
+#         print("saved final model ➜", final_path)
+#
+#     if out_dir:
+#         # Training MSE curve
+#         xs = np.arange(len(loss_history)); ys = np.array(loss_history)
+#         # [CHANGED] also save full train-MSE history to CSV (epoch, train_mse)
+#         pd.DataFrame({"epoch": xs + 1, "train_mse": ys}).to_csv(
+#             os.path.join(out_dir, "Training_MSE_full.csv"), index=False
+#         )
+#
+#         plt.figure(figsize=(6,4)); plt.plot(xs, ys); plt.grid(True, ls='--', alpha=0.5)
+#         plt.xlabel("Epoch"); plt.ylabel("Train MSE"); plt.title("Training Curve")
+#         plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Training_MSE.png")); plt.close()
+#
+#         # Test MSE (every epoch)
+#         if per_epoch_rows:
+#             df_full = pd.DataFrame(per_epoch_rows)
+#             csv_full = os.path.join(out_dir, "Holdout_MSE_full.csv")
+#             df_full.to_csv(csv_full, index=False); print("saved ➜", csv_full)
+#
+#             df_train_full = pd.DataFrame({"epoch": xs + 1, "train_mse": ys})
+#             df_tt = df_full.merge(df_train_full, on="epoch", how="left")
+#             df_tt = df_tt[df_tt["epoch"] >= 20]
+#
+#             plt.figure(figsize=(6, 4))
+#             plt.plot(df_tt["epoch"], df_tt["avg_mse"], label="Test (avg MSE)",
+#                      linewidth=1.2, alpha=0.9)
+#             plt.plot(df_tt["epoch"], df_tt["train_mse"], label="Train (MSE)",
+#                      linewidth=1.2, alpha=0.9)
+#             plt.xlabel("Epoch"); plt.ylabel("MSE"); plt.title("Train vs Test MSE (every epoch)")
+#             plt.grid(True, ls='--', alpha=0.5); plt.legend()
+#             plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Train_vs_Test_MSE_every_epoch.png")); plt.close()
+#
+#             best_i = int(df_full['avg_mse'].idxmin()); best = df_full.iloc[best_i]
+#             plt.figure(figsize=(6,4))
+#             plt.plot(df_full["epoch"], df_full["avg_mse"], marker='o', lw=1.5)
+#             plt.scatter([best['epoch']], [best['avg_mse']])
+#             plt.text(best['epoch'], best['avg_mse'], f"  min@{int(best['epoch'])}: {best['avg_mse']:.4f}",
+#                      ha='left', va='bottom', fontsize=9)
+#             plt.xlabel("Epoch"); plt.ylabel("Avg Test MSE"); plt.title("Avg Test MSE (every epoch)")
+#             plt.grid(True, ls='--', alpha=0.5)
+#             plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Holdout_MSE_every_epoch.png")); plt.close()
+#
+#             # Optimisation curves (from epoch 50)
+#             start_epoch = 50
+#             plot_start = 0 if len(ys) <= start_epoch else start_epoch
+#             xs2, ys2 = xs[plot_start:], ys[plot_start:]
+#
+#             plt.figure(figsize=(6, 4))
+#             plt.plot(xs2, np.log(ys2 + 1e-12), label='Training Loss (log)', linewidth=1.2, alpha=0.9)  # [CHANGED]
+#             plt.xlabel('Epochs'); plt.ylabel('log(MSE)'); plt.title(f'Optimisation Curve (from epoch {plot_start}, log)')
+#             plt.legend(); plt.grid(True, ls='--', alpha=0.5)
+#             plt.tight_layout(); plt.savefig(os.path.join(out_dir, 'Optimisation_Curve_log.png')); plt.close()
+#
+#             plt.figure(figsize=(6, 4))
+#             plt.plot(xs2, ys2, label='Training Loss', linewidth=1.2, alpha=0.9)  # [CHANGED]
+#             plt.xlabel('Epochs'); plt.ylabel('MSE'); plt.title(f'Optimisation Curve (from epoch {plot_start})')
+#             plt.legend(); plt.grid(True, ls='--', alpha=0.5)
+#             plt.tight_layout(); plt.savefig(os.path.join(out_dir, 'Optimisation_Curve.png')); plt.close()
+#
+#             # sparse-at-ckpt CSV
+#             if sparse_ckpt_rows:
+#                 pd.DataFrame(sparse_ckpt_rows).to_csv(
+#                     os.path.join(out_dir, "Holdout_MSE_sparse_at_checkpoints.csv"), index=False
+#                 )
+#
+#     return loss_history
 
-def train(model, dataset_graphs, epochs=500, lr=1e-5):
+' Version 1. OneCycleLR '
+def train(model, dataset_graphs, epochs=1000, lr=5e-5, weight_decay=1e-7,
+          base_test_dir: str = None, holdout_bases: list = None, out_dir: str = None,
+          ckpt_every: int = 10, checkpoint_dir: str = None,
+          use_onecycle: bool = False, max_lr: float = None, onecycle_kwargs: dict = None ):
+
     model.to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr) # adamw
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = epochs) # cosine
-    #scheduler = StepLR(optimizer, step_size=1000, gamma=0.1)
-    # lr_lambda = lambda epoch: 1.0 if epoch < 50 else 0.1
-    # scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    if checkpoint_dir is None and out_dir:
+        checkpoint_dir = os.path.join(out_dir, 'checkpoints')
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    init_lr = lr
+    if use_onecycle and max_lr is not None and onecycle_kwargs and "div_factor" in onecycle_kwargs:
+        init_lr = float(max_lr) / float(onecycle_kwargs["div_factor"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=init_lr, weight_decay=weight_decay)
+
+    scheduler = None
+    if use_onecycle:
+        if max_lr is None:
+            raise ValueError("use_onecycle=True requires max_lr.")
+        steps_per_epoch = max(1, len(dataset_graphs))
+        total_steps = epochs * steps_per_epoch
+
+        oc_defaults = dict(
+            pct_start=0.3, anneal_strategy='cos',
+            cycle_momentum=True, base_momentum=0.85, max_momentum=0.95,
+            div_factor=25.0, final_div_factor=1e4, three_phase=False)
+        if onecycle_kwargs:
+            oc_defaults.update(onecycle_kwargs)
+
+        scheduler = OneCycleLR(
+            optimizer,
+            max_lr=max_lr,
+            total_steps=total_steps,
+            **oc_defaults
+        )
+
     loss_history = []
+    per_epoch_rows = []
+    sparse_ckpt_rows = []
+
+    def _current_lr(opt):
+        return float(opt.param_groups[0]['lr'])
 
     for ep in range(1, epochs + 1):
         model.train()
         losses = []
 
         for data_list in dataset_graphs:
-            phi_hat = model(data_list).view(-1)
-            phi_true = data_list[0].tmc.to(device)
-            # # Add l1 normalisation to ensure equal contributions of datasets with different number of points
-            # phi_true_scaled = phi_true/phi_true.sum()
-            # phi_hat_scaled = phi_hat / phi_hat.sum()
-            # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction = 'sum')
+            phi_hat  = model(data_list).view(-1)
+            phi_true = data_list[0].phi.to(device)
+            # loss     = F.mse_loss(phi_hat, phi_true, reduction='mean')
+            loss = F.huber_loss(phi_hat, phi_true, delta = 0.01)
 
-            # loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
-            # loss_MSE = F.mse_loss(F.softmax(phi_hat, dim=0), F.softmax(phi_true, dim=0))
-            # loss_MSE = F.mse_loss(phi_hat_scaled, phi_true_scaled, reduction='sum') / len(phi_true)
-            # loss_Rank = BPR_loss(phi_hat_scaled, phi_true_scaled)
-            # loss = (1-alpha) * loss_MSE + alpha * loss_Rank
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
 
-            # loss_MSE = F.l1_loss(phi_hat, phi_true, reduction='sum')
-            # loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean') * (len(phi_true) ** 2)
-            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean')
+            if scheduler is not None:
+                scheduler.step()
 
-            loss = loss_MSE
             losses.append(loss)
+
         L = torch.stack(losses).mean()
         loss_history.append(L.item())
 
-        optimizer.zero_grad()
-        L.backward()
-        optimizer.step()
-        # scheduler.step()
-
         if ep % 5 == 0:
-            # current_lr = scheduler.get_last_lr()[0]
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f'Epoch {ep:3d} | total loss {L:.16f}| LR: {current_lr:.2e}')
+            print(f'Epoch {ep:3d} | total loss {L:.6e} | LR: {_current_lr(optimizer):.2e}')
+
+        avg_mse = None
+        if holdout_bases and base_test_dir:
+            model.eval()
+            row = {"epoch": ep}
+            with torch.no_grad():
+                mses = []
+                for base in holdout_bases:
+                    p = _mk_paths(base_test_dir, base)
+                    dl = load_and_preprocess(p['train_like'], p['test'])
+                    pred = model(dl).view(-1)
+                    phi_t = dl[0].phi.to(device).view(-1)
+                    # m = F.mse_loss(pred, phi_t, reduction='mean').item()
+                    m = F.huber_loss(pred, phi_t, delta = 0.01)
+                    row[base] = m
+                    mses.append(m)
+                if mses:
+                    avg_mse = float(np.mean(mses))
+                    row["avg_mse"] = avg_mse
+                    per_epoch_rows.append(row)
+                    print(f'>>> Test avg MSE @ {ep}: {avg_mse:.6f}')
+
+        if ckpt_every and (ep % ckpt_every == 0) and checkpoint_dir:
+            path = os.path.join(checkpoint_dir, f"model_ep{ep}.pt")
+            torch.save({
+                "epoch": ep,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "loss_train_mse": L.item(),
+                "avg_test_mse": avg_mse,
+            }, path)
+            print("saved checkpoint ➜", path)
+            if avg_mse is not None:
+                sparse_ckpt_rows.append({"epoch": ep, "avg_mse": avg_mse})
+
+    if checkpoint_dir:
+        final_path = os.path.join(checkpoint_dir, f"model_final_ep{epochs}.pt")
+        torch.save({
+            "epoch": epochs,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "loss_train_mse": loss_history[-1],
+            "avg_test_mse": (per_epoch_rows[-1]["avg_mse"] if per_epoch_rows else None),
+        }, final_path)
+        print("saved final model ➜", final_path)
+
+    if out_dir:
+        xs = np.arange(len(loss_history)); ys = np.array(loss_history)
+        pd.DataFrame({"epoch": xs + 1, "train_mse": ys}).to_csv(
+            os.path.join(out_dir, "Training_MSE_full.csv"), index=False
+        )
+
+        plt.figure(figsize=(6,4)); plt.plot(xs, ys); plt.grid(True, ls='--', alpha=0.5)
+        plt.xlabel("Epoch"); plt.ylabel("Train MSE"); plt.title("Training Curve")
+        plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Training_MSE.png")); plt.close()
+
+        if per_epoch_rows:
+            df_full = pd.DataFrame(per_epoch_rows)
+            csv_full = os.path.join(out_dir, "Holdout_MSE_full.csv")
+            df_full.to_csv(csv_full, index=False); print("saved ➜", csv_full)
+
+            df_train_full = pd.DataFrame({"epoch": xs + 1, "train_mse": ys})
+            df_tt = df_full.merge(df_train_full, on="epoch", how="left")
+            df_tt = df_tt[df_tt["epoch"] >= 20]
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(df_tt["epoch"], df_tt["avg_mse"], label="Test (avg MSE)", linewidth=1.2, alpha=0.9)
+            plt.plot(df_tt["epoch"], df_tt["train_mse"], label="Train (MSE)", linewidth=1.2, alpha=0.9)
+            plt.xlabel("Epoch"); plt.ylabel("MSE"); plt.title("Train vs Test MSE (every epoch)")
+            plt.grid(True, ls='--', alpha=0.5); plt.legend()
+            plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Train_vs_Test_MSE_every_epoch.png")); plt.close()
+
+            best_i = int(df_full['avg_mse'].idxmin()); best = df_full.iloc[best_i]
+            plt.figure(figsize=(6,4))
+            plt.plot(df_full["epoch"], df_full["avg_mse"], marker='o', lw=1.5)
+            plt.scatter([best['epoch']], [best['avg_mse']])
+            plt.text(best['epoch'], best['avg_mse'], f"  min@{int(best['epoch'])}: {best['avg_mse']:.4f}",
+                     ha='left', va='bottom', fontsize=9)
+            plt.xlabel("Epoch"); plt.ylabel("Avg Test MSE"); plt.title("Avg Test MSE (every epoch)")
+            plt.grid(True, ls='--', alpha=0.5)
+            plt.tight_layout(); plt.savefig(os.path.join(out_dir, "Holdout_MSE_every_epoch.png")); plt.close()
+
+            start_epoch = 50
+            plot_start = 0 if len(ys) <= start_epoch else start_epoch
+            xs2, ys2 = xs[plot_start:], ys[plot_start:]
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(xs2, np.log(ys2 + 1e-12), label='Training Loss (log)', linewidth=1.2, alpha=0.9)
+            plt.xlabel('Epochs'); plt.ylabel('log(MSE)'); plt.title(f'Optimisation Curve (from epoch {plot_start}, log)')
+            plt.legend(); plt.grid(True, ls='--', alpha=0.5)
+            plt.tight_layout(); plt.savefig(os.path.join(out_dir, 'Optimisation_Curve_log.png')); plt.close()
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(xs2, ys2, label='Training Loss', linewidth=1.2, alpha=0.9)
+            plt.xlabel('Epochs'); plt.ylabel('MSE'); plt.title(f'Optimisation Curve (from epoch {plot_start})')
+            plt.legend(); plt.grid(True, ls='--', alpha=0.5)
+            plt.tight_layout(); plt.savefig(os.path.join(out_dir, 'Optimisation_Curve.png')); plt.close()
+
+            if sparse_ckpt_rows:
+                pd.DataFrame(sparse_ckpt_rows).to_csv(
+                    os.path.join(out_dir, "Holdout_MSE_sparse_at_checkpoints.csv"), index=False
+                )
 
     return loss_history
-
 
 '''
 6. Prediction
 '''
 def predict(model, data_list):
     model.eval()
-    # model.train()
     d = data_list[0].to(device)
     with torch.no_grad():
         return model(data_list).squeeze().cpu().numpy()
@@ -448,189 +693,8 @@ def predict(model, data_list):
 ######################################################################################################
 #########################################  Experiments ###############################################
 
-'''
-EXP 1
-'''
-
-'A. Implementation'
-# if __name__ == '__main__':
-#     BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2'
-#     BASE01 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group01'
-#     BASE02 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group03'
-#     BASE03 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04'
-#     BASEBC = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05'
-#     #BASE = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2'
-#     PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09'
-#     #PATH_OUT = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
-#     # Train_list = [
-#     #     (f'{BASE01}/Iris_01_1'),(f'{BASE01}/Iris_01_2'),
-#     #     (f'{BASE01}/Iris_01_3'),(f'{BASE01}/Iris_01_4'),
-#     #     (f'{BASE01}/Iris_01_5'),(f'{BASE01}/Iris_01_6'),
-#     #     (f'{BASE01}/Iris_01_7'),(f'{BASE01}/Iris_01_8'),
-#     #     (f'{BASE01}/Iris_01_9'),(f'{BASE01}/Iris_01_10'),
-#     #     (f'{BASE01}/Iris_01_11'),(f'{BASE01}/Iris_01_12'),
-#     #     (f'{BASE01}/Iris_01_13'),(f'{BASE01}/Iris_01_14'),
-#     #     (f'{BASE01}/Iris_01_15'),(f'{BASE01}/Iris_01_16'),
-#     #     (f'{BASE01}/Iris_01_17'), (f'{BASE01}/Iris_01_18'),
-#     #     (f'{BASE01}/Iris_01_19'), (f'{BASE01}/Iris_01_20'),
-#     #     (f'{BASE01}/Iris_01_21'), (f'{BASE01}/Iris_01_22'),
-#     #     (f'{BASE01}/Iris_01_23'), (f'{BASE01}/Iris_01_24'),
-#     #     (f'{BASE01}/Iris_01_25'), (f'{BASE01}/Iris_01_26'),
-#     #     (f'{BASE01}/Iris_01_27'), (f'{BASE01}/Iris_01_28'),
-#     #     (f'{BASE01}/Iris_01_29'), (f'{BASE01}/Iris_01_30'),
-#     #     (f'{BASE02}/Iris_02_1'), (f'{BASE02}/Iris_02_2'),
-#     #     (f'{BASE02}/Iris_02_3'), (f'{BASE02}/Iris_02_4'),
-#     #     (f'{BASE02}/Iris_02_5'), (f'{BASE02}/Iris_02_6'),
-#     #     (f'{BASE02}/Iris_02_7'), (f'{BASE02}/Iris_02_8'),
-#     #     (f'{BASE02}/Iris_02_9'), (f'{BASE02}/Iris_02_10'),
-#     #     (f'{BASE02}/Iris_02_11'), (f'{BASE02}/Iris_02_12'),
-#     #     (f'{BASE02}/Iris_02_13'), (f'{BASE02}/Iris_02_14'),
-#     #     (f'{BASE02}/Iris_02_15'), (f'{BASE02}/Iris_02_16'),
-#     #     (f'{BASE02}/Iris_02_17'), (f'{BASE02}/Iris_02_18'),
-#     #     (f'{BASE02}/Iris_02_19'), (f'{BASE02}/Iris_02_20')
-#     # ]
-#     # Train_list = [
-#     #     (f'{BASE00}/Iris_01'),
-#     #     (f'{BASE00}/Iris_02'),
-#     #     (f'{BASE00}/bc_1'),
-#     #     (f'{BASE00}/bc_2'),
-#     #     (f'{BASE00}/bc_3'),
-#     #     (f'{BASE00}/MNIST_01'),
-#     #     (f'{BASE00}/MNIST_12'),
-#     #     (f'{BASE00}/MNIST_23'),
-#     #     (f'{BASE00}/MNIST_34'),
-#     #     (f'{BASE00}/MNIST_45'),
-#     #     (f'{BASE00}/MNIST_56'),
-#     #     (f'{BASE00}/MNIST_67')
-#     # ]
-#     Train_list = [
-#         (f'{BASEBC}/bc_1.csv'), (f'{BASEBC}/bc_2.csv'),
-#         (f'{BASEBC}/bc_3.csv'), (f'{BASEBC}/bc_4.csv'),
-#         (f'{BASEBC}/bc_5.csv'), (f'{BASEBC}/bc_6.csv'),
-#         (f'{BASEBC}/bc_7.csv'), (f'{BASEBC}/bc_8.csv'),
-#         (f'{BASEBC}/bc_9.csv'), (f'{BASEBC}/bc_10.csv'),
-#         (f'{BASEBC}/bc_11.csv'), (f'{BASEBC}/bc_12.csv'),
-#         (f'{BASEBC}/bc_13.csv'), (f'{BASEBC}/bc_14.csv'),
-#         (f'{BASEBC}/bc_15.csv'), (f'{BASEBC}/bc_16.csv'),
-#         (f'{BASEBC}/bc_17.csv'), (f'{BASEBC}/bc_18.csv'),
-#         (f'{BASEBC}/bc_19.csv'), (f'{BASEBC}/bc_20.csv'),
-#         (f'{BASEBC}/bc_21.csv'), (f'{BASEBC}/bc_22.csv'),
-#         (f'{BASEBC}/bc_23.csv'), (f'{BASEBC}/bc_24.csv'),
-#         (f'{BASEBC}/bc_25.csv'), (f'{BASEBC}/bc_26.csv'),
-#         (f'{BASEBC}/bc_27.csv'), (f'{BASEBC}/bc_28.csv'),
-#         (f'{BASEBC}/bc_29.csv'), (f'{BASEBC}/bc_30.csv')
-#     ]
-#
-#     # Test_list = [
-#     #     (f'{BASE01}/Iris_01_test_1'),(f'{BASE01}/Iris_01_test_2'),
-#     #     (f'{BASE01}/Iris_01_test_3'),(f'{BASE01}/Iris_01_test_4'),
-#     #     (f'{BASE01}/Iris_01_test_5'),(f'{BASE01}/Iris_01_test_6'),
-#     #     (f'{BASE01}/Iris_01_test_7'),(f'{BASE01}/Iris_01_test_8'),
-#     #     (f'{BASE01}/Iris_01_test_9'),(f'{BASE01}/Iris_01_test_10'),
-#     #     (f'{BASE01}/Iris_01_test_11'),(f'{BASE01}/Iris_01_test_12'),
-#     #     (f'{BASE01}/Iris_01_test_13'),(f'{BASE01}/Iris_01_test_14'),
-#     #     (f'{BASE01}/Iris_01_test_15'),(f'{BASE01}/Iris_01_test_16'),
-#     #     (f'{BASE01}/Iris_01_test_17'), (f'{BASE01}/Iris_01_test_18'),
-#     #     (f'{BASE01}/Iris_01_test_19'), (f'{BASE01}/Iris_01_test_20'),
-#     #     (f'{BASE01}/Iris_01_test_21'), (f'{BASE01}/Iris_01_test_22'),
-#     #     (f'{BASE01}/Iris_01_test_23'), (f'{BASE01}/Iris_01_test_24'),
-#     #     (f'{BASE01}/Iris_01_test_25'), (f'{BASE01}/Iris_01_test_26'),
-#     #     (f'{BASE01}/Iris_01_test_27'), (f'{BASE01}/Iris_01_test_28'),
-#     #     (f'{BASE01}/Iris_01_test_29'), (f'{BASE01}/Iris_01_test_30'),
-#     #     (f'{BASE02}/Iris_02_test_1'), (f'{BASE02}/Iris_02_test_2'),
-#     #     (f'{BASE02}/Iris_02_test_3'), (f'{BASE02}/Iris_02_test_4'),
-#     #     (f'{BASE02}/Iris_02_test_5'), (f'{BASE02}/Iris_02_test_6'),
-#     #     (f'{BASE02}/Iris_02_test_7'), (f'{BASE02}/Iris_02_test_8'),
-#     #     (f'{BASE02}/Iris_02_test_9'), (f'{BASE02}/Iris_02_test_10'),
-#     #     (f'{BASE02}/Iris_02_test_11'), (f'{BASE02}/Iris_02_test_12'),
-#     #     (f'{BASE02}/Iris_02_test_13'), (f'{BASE02}/Iris_02_test_14'),
-#     #     (f'{BASE02}/Iris_02_test_15'), (f'{BASE02}/Iris_02_test_16'),
-#     #     (f'{BASE02}/Iris_02_test_17'), (f'{BASE02}/Iris_02_test_18'),
-#     #     (f'{BASE02}/Iris_02_test_19'), (f'{BASE02}/Iris_02_test_20')
-#     # ]
-#
-#     # Test_list = [
-#     #     (f'{BASE00}/Iris_01_test'),
-#     #     (f'{BASE00}/Iris_02_test'),
-#     #     (f'{BASE00}/bc_1_test'),
-#     #     (f'{BASE00}/bc_2_test'),
-#     #     (f'{BASE00}/bc_3_test'),
-#     #     (f'{BASE00}/MNIST_01_test'),
-#     #     (f'{BASE00}/MNIST_12_test'),
-#     #     (f'{BASE00}/MNIST_23_test'),
-#     #     (f'{BASE00}/MNIST_34_test'),
-#     #     (f'{BASE00}/MNIST_45_test'),
-#     #     (f'{BASE00}/MNIST_56_test'),
-#     #     (f'{BASE00}/MNIST_67_test')
-#     # ]
-#
-#     Test_list = [
-#         (f'{BASEBC}/bc_1_test.csv'), (f'{BASEBC}/bc_2_test.csv'),
-#         (f'{BASEBC}/bc_3_test.csv'), (f'{BASEBC}/bc_4_test.csv'),
-#         (f'{BASEBC}/bc_5_test.csv'), (f'{BASEBC}/bc_6_test.csv'),
-#         (f'{BASEBC}/bc_7_test.csv'), (f'{BASEBC}/bc_8_test.csv'),
-#         (f'{BASEBC}/bc_9_test.csv'), (f'{BASEBC}/bc_10_test.csv'),
-#         (f'{BASEBC}/bc_11_test.csv'), (f'{BASEBC}/bc_12_test.csv'),
-#         (f'{BASEBC}/bc_13_test.csv'), (f'{BASEBC}/bc_14_test.csv'),
-#         (f'{BASEBC}/bc_15_test.csv'), (f'{BASEBC}/bc_16_test.csv'),
-#         (f'{BASEBC}/bc_17_test.csv'), (f'{BASEBC}/bc_18_test.csv'),
-#         (f'{BASEBC}/bc_19_test.csv'), (f'{BASEBC}/bc_20_test.csv'),
-#         (f'{BASEBC}/bc_21_test.csv'), (f'{BASEBC}/bc_22_test.csv'),
-#         (f'{BASEBC}/bc_23_test.csv'), (f'{BASEBC}/bc_24_test.csv'),
-#         (f'{BASEBC}/bc_25_test.csv'), (f'{BASEBC}/bc_26_test.csv'),
-#         (f'{BASEBC}/bc_27_test.csv'), (f'{BASEBC}/bc_28_test.csv'),
-#         (f'{BASEBC}/bc_29_test.csv'), (f'{BASEBC}/bc_30_test.csv')
-#     ]
-#     # holdout_train_csv = f'{BASE03}/Iris_12_2'
-#     # holdout_test_csv = f'{BASE03}/Iris_12_test_2'
-#     # holdout_train_csv = f'{BASE00}/Iris_12'
-#     # holdout_test_csv = f'{BASE00}/Iris_12_test'
-#     holdout_train_csv = f'{BASEBC}/bc_31.csv'
-#     holdout_test_csv = f'{BASEBC}/bc_31_test.csv'
-#
-#     data_list = [
-#         load_and_preprocess(train_csv, test_csv)
-#         for train_csv, test_csv in zip(Train_list, Test_list)
-#     ]
-#     data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
-#
-#     # all_phi_scaled = torch.cat([d.tmc.view(-1) for d in data_list], dim = 0)
-#     # bias_init = float(all_phi_scaled.mean().item())
-#
-#     gnn = GINShap(in_channels = 10, hidden_channels = 256, heads = 32)
-#     loss_history = train(gnn, data_list, epochs = 200, lr = 1e-4, alpha = 0.5)
-#
-#     plt.figure(figsize = (6, 4))
-#     plt.plot(loss_history, label = 'Training Loss')
-#     plt.xlabel('Epochs')
-#     plt.ylabel('Loss')
-#     plt.title('Optimisation Curve')
-#     plt.legend()
-#     plt.grid(True)
-#     plt_path = os.path.join(PATH_OUT, 'Optimisation_Curve.png')
-#     plt.savefig(plt_path)
-#     print('Optimisation Curve Saved.')
-#
-#     preds = predict(gnn, data_holdout)
-#     print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
-#
-#     df_holdout = pd.read_csv(holdout_train_csv)
-#     df_holdout['Pred_Shap'] = preds
-#     out_csv = f'{PATH_OUT}/Iris_12_Pred.csv'
-#     df_holdout.to_csv(out_csv, index=False)
-#     print('saved ➜', out_csv)
-#
-#     # Predict and save for each training dataset
-#     for train_csv, data in zip(Train_list, data_list):
-#         preds_train = predict(gnn, data)
-#
-#         df_train = pd.read_csv(train_csv)
-#         df_train['Pred_Shap'] = preds_train
-#
-#         base_name = os.path.basename(train_csv)
-#         out_csv_train = os.path.join(PATH_OUT, f'{base_name}_Pred.csv')
-#         df_train.to_csv(out_csv_train, index=False)
-#         print('saved ➜', out_csv_train)
+def _ensure_dir(p: str):
+    os.makedirs(p, exist_ok=True)
 
 def find_train_test_pairs(directory):
     test_re  = re.compile(r"^(.+?)_test_(\d+)$")
@@ -657,296 +721,443 @@ def find_train_test_pairs(directory):
             print(f"⚠️  no test file for {tr!r}  (wanted {key[0]}_test_{key[1]})")
     return pairs
 
-if __name__ == '__main__':
-    BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Train'
-    BASE11 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test'
-    PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250910/Trial09/'
-    # BASE00 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Train'
-    # BASE11 = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test'
-    # PATH_OUT = '/tmp/pycharm_project_236/Outputs/250821/Trial01/'
+def _mk_paths(base_test_dir: str, base_name: str):
+    parts = base_name.split("_")
+    if len(parts) == 3:
+        # MNIST-style: MNIST_{ab}_{i}
+        prefix, ab, i = parts[0], parts[1], parts[2]
+        train_like_csv = os.path.join(base_test_dir, base_name)
+        test_csv       = os.path.join(base_test_dir, f"{prefix}_{ab}_test_{i}")
+        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_{ab}_TMC_{i}")
+        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
 
-    base_dirs = [BASE00]
-    all_pairs = []
-    for bd in base_dirs:
-        all_pairs += find_train_test_pairs(bd)
+    elif len(parts) == 2:
+        # Two-part style: <prefix>_{i} (e.g., bc_1)
+        prefix, i = parts[0], parts[1]
+        train_like_csv = os.path.join(base_test_dir, base_name)
+        test_csv       = os.path.join(base_test_dir, f"{prefix}_test_{i}")
+        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_TMC_{i}")
+        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
 
-    Train_list, Test_list = zip(*all_pairs)
-    holdout_train_csv = os.path.join(BASE11, 'MNIST_17_1')
-    holdout_test_csv  = os.path.join(BASE11, 'MNIST_17_test_1')
+    else:
+        raise ValueError(f"Unexpected base_name format: {base_name}")
 
-    # load everything
-    data_list    = [load_and_preprocess(train, test)
-                    for train, test in zip(Train_list, Test_list)]
-    data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
+def print_adj_weights(model):
+    with torch.no_grad():
+        print("\n=== Learned adjacency weights per c in C_List ===")
+        print(" idx | c  | alpha  beta  w_feature  w_label")
+        for i, c in enumerate(C_List):
+            a = model.alphas[i]
+            b = model.betas[i]
+            probs = F.softmax(torch.stack([a, b]), dim = 0)
+            print(f"{i:>4d} | {c:<6} | {a.item():<13.6f} {b.item():<13.6f} {probs[0].item():<16.6f} {probs[1].item():<16.6f}")
+    print()
 
-    # build & train
-    gnn = GINShap(in_channels=40, hidden_channels=256, heads=8)
-    loss_history = train(gnn, data_list, epochs=3000, lr=1e-5)
-
-    # plot optimisation curve
-    plt.figure(figsize=(6,4))
-    plt.plot(np.log(loss_history), label='Training Loss')
-    plt.xlabel('Epochs'); plt.ylabel('log(Loss)')
-    plt.title('Optimisation Curve(Log)'); plt.legend(); plt.grid(True)
-    plt.savefig(os.path.join(PATH_OUT, 'Optimisation_Curve.png'))
-
-    # holdout predictions
-    preds = predict(gnn, data_holdout)
-
-    print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
-
-    # save holdout
-    df_holdout = pd.read_csv(holdout_train_csv)
-    df_holdout['Pred_Shap'] = preds
-    df_holdout.to_csv(os.path.join(PATH_OUT, 'Iris_02_21_Pred.csv'), index=False)
-
-    # save train preds
-    for train_csv, data in zip(Train_list, data_list):
-        df_train = pd.read_csv(train_csv)
-        df_train['Pred_Shap'] = predict(gnn, data)
-        out = os.path.join(PATH_OUT, os.path.basename(train_csv).replace('.csv','') + '_Pred.csv')
-        df_train.to_csv(out, index=False)
-        print('saved ➜', out)
-
-
-'Removal Plots'
-#df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_test_2')
-#df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_test')
-# df_test = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_test_1')
-df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_test_1')
-X_test = pd.get_dummies(df_test.drop(columns = ['target'])).to_numpy()
-y_test = df_test['target'].to_numpy()
-#df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04/Iris_12_TMC_2')
-df_tmc = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_TMC_1')
-df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test/MNIST_17_1')
-#df_train = pd.read_csv('/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2/Iris_12_TMC')
-# df_train = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_1')
-# df_tmc = pd.read_csv('/tmp/pycharm_project_236/Datasets/TrainnTestSets_V6/10n15p20/Test/MNIST_17_TMC_1')
-# X_train = pd.get_dummies(df_train.drop(
-#                 columns=['target','TrueDShap','TMC_Shap'])).to_numpy()
-X_train = pd.get_dummies(df_train.drop(
-                columns=['target','PerDShap'])).to_numpy()
-y_train = df_train['target'].to_numpy()
-# True_Shap = df_train['TrueDShap'].to_numpy()
-TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
-Per_DShap = df_train['PerDShap'].to_numpy()
-Pred_Shap = preds
-# df_holdout = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250907/Trial01/Iris_02_1_Pred.csv')
-# preds = df_holdout['Pred_Shap']
-# PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250826/Trial01/', 'MNIST17_1_High.png')
-#PERF_PATH = os.path.join('/tmp/pycharm_project_236/Outputs/250715/Trial04', 'MNIST17_1_Low.png')
-PERF_PATH = os.path.join('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250910/Trial09/', 'MNIST_17_1_High.png')
-from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
-removal_percentages, results = PerformancePlot_Removal(
-    vals={ 'Permuted Data Shapley': Per_DShap,
-        # 'True Data Shapley': True_Shap,
-          'TMC Data Shapley': TMC_Shap,
-          'Predicted Shapley': Pred_Shap},
-    X_train = X_train, y_train = y_train,
-    X_test = X_test, y_test = y_test,
-    a = 0.05, b = 0.4, ylim = (40,105),
-    order = 'descending', random_iters = 10,
-    save_path = PERF_PATH
-)
-
-
-'Distribution/Magnitude Comparison'
-GRAPH_DIR = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250910/Trial09'
-# GRAPH_DIR = '/tmp/pycharm_project_236/Outputs/250814/Trial02/'
-# true_vals = np.asarray(True_Shap)
-tmc_vals  = np.asarray(TMC_Shap)
-per_vals = np.asarray(Per_DShap)
-pred_vals = np.asarray(Pred_Shap)
-# mean_true = true_vals.mean()
-mean_tmc  = tmc_vals.mean()
-mean_per = per_vals.mean()
-mean_pred = pred_vals.mean()
-# N = len(true_vals)
-N = len(Per_DShap)
-indices = np.arange(N)
-width = 0.25
-plt.figure(figsize=(10,6))
-# plt.bar(indices - width, true_vals,  width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
-plt.bar(indices, tmc_vals, width, label='TMC Shapley', color='tab:orange',edgecolor='k', alpha=0.7)
-plt.bar(indices, per_vals, width, label='Permuted Shapley', color='tab:purple',edgecolor='k', alpha=0.7)
-plt.bar(indices + width, pred_vals, width, label='Predicted Shapley',  color='tab:green', edgecolor='k', alpha=0.7)
-# plt.plot(indices, [mean_true]*N, linestyle='--', linewidth=2, label=f'Average True Shapley Values ({mean_true:.3f})',   color='tab:blue')
-plt.plot(indices, [mean_tmc]*N, linestyle='--', linewidth=2, label=f'Average TMC Shapley Values ({mean_tmc:.3f})',     color='tab:orange')
-plt.plot(indices, [mean_per]*N, linestyle='--', linewidth=2, label=f'Average Permuted Shapley Values ({mean_per:.3f})', color='tab:purple')
-plt.plot(indices, [mean_pred]*N, linestyle='--', linewidth=2, label=f'Average Predicted Shapley Values ({mean_pred:.3f})',color='tab:green')
-plt.xlabel('Sample Index', fontsize=12, weight='bold')
-plt.ylabel('Shapley Value', fontsize=12, weight='bold')
-# plt.title('Comparison of True, TMC & Predicted Shapley Values', fontsize=14, weight='bold')
-plt.title('Comparison of TMC & Permuted & Predicted Shapley Values', fontsize=14, weight='bold')
-plt.xticks(indices)
-plt.grid(axis='y', linestyle='--', alpha=0.4)
-plt.legend(fontsize=11)
-plt.tight_layout()
-out_path = os.path.join(GRAPH_DIR, 'Shapley_compare.png')
-plt.savefig(out_path, dpi=500)
-plt.show()
-
-'Linear Plot'
-# true_vals = np.asarray(True_Shap)
-pred_vals = np.asarray(Pred_Shap)
-tmc_vals  = np.asarray(TMC_Shap)
-per_vals = np.asarray(Per_DShap)
-
-plt.figure(figsize=(8,8))
-# plt.scatter(true_vals, pred_vals,
-#             s=200, color='tab:blue', alpha=0.6, edgecolors='k',
-#             linewidth=0.5, label='Predicted Shapley')
-plt.scatter(per_vals, tmc_vals,
-            s=200, color='tab:orange', alpha=0.6, edgecolors='k',
-            linewidth=0.5, label='TMC Shapley')
-plt.scatter(per_vals, pred_vals,
-            s=200, color='tab:purple', alpha=0.6, edgecolors='k',
-            linewidth=0.5, label='Predicted vs Permuted Shapley')
-# all_min = min(true_vals.min(), pred_vals.min(), tmc_vals.min())
-# all_max = max(true_vals.max(), pred_vals.max(), tmc_vals.max())
-all_min = min(per_vals.min(),tmc_vals.mean(), pred_vals.min())
-all_max = max(per_vals.max(),tmc_vals.mean(), pred_vals.max())
-plt.plot([all_min - 0.01, all_max + 0.01], [all_min-0.01, all_max+0.01],'--k', linewidth=1.5, label='y = x')
-
-# plt.xlabel('True TMC Shapley Values', fontsize=10, weight='bold')
-plt.xlabel('Permuted Shapley Value', fontsize=12, weight='bold')
-plt.ylabel('Predicted Shapley Values', fontsize=10, weight='bold')
-# plt.title('True vs Predicted & TMC Shapley Values', fontsize=12, weight='bold')
-plt.title('Permuted vs TMC & Predicted Shapley Values', fontsize=14, weight='bold')
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.legend(fontsize=10)
-
-out_path = os.path.join(GRAPH_DIR, 'DShap_LinearCompare2.png')
-plt.savefig(out_path, dpi=500)
-plt.tight_layout()
-plt.show()
-
-
-
-'Check Train Sets'
-BASE2 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250910/Trial09'
-# BASE2 = '/tmp/pycharm_project_236/Outputs/250815/Trial02'
-# Train_list = [
-#             (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_01_2_Pred.csv'),
-#             (f'{BASE2}/Iris_01_3_Pred.csv'), (f'{BASE2}/Iris_01_4_Pred.csv'),
-#             (f'{BASE2}/Iris_01_5_Pred.csv'), (f'{BASE2}/Iris_01_6_Pred.csv'),
-#             (f'{BASE2}/Iris_01_7_Pred.csv'), (f'{BASE2}/Iris_01_8_Pred.csv'),
-#             (f'{BASE2}/Iris_01_9_Pred.csv'), (f'{BASE2}/Iris_01_10_Pred.csv'),
-#             (f'{BASE2}/Iris_01_11_Pred.csv'), (f'{BASE2}/Iris_01_12_Pred.csv'),
-#             (f'{BASE2}/Iris_01_13_Pred.csv'), (f'{BASE2}/Iris_01_14_Pred.csv'),
-#             (f'{BASE2}/Iris_01_15_Pred.csv'), (f'{BASE2}/Iris_01_16_Pred.csv'),
-#             (f'{BASE2}/Iris_01_17_Pred.csv'), (f'{BASE2}/Iris_01_18_Pred.csv'),
-#             (f'{BASE2}/Iris_01_19_Pred.csv'), (f'{BASE2}/Iris_01_20_Pred.csv'),
-#             (f'{BASE2}/Iris_01_21_Pred.csv'), (f'{BASE2}/Iris_01_22_Pred.csv'),
-#             (f'{BASE2}/Iris_01_23_Pred.csv), (f'{BASE2}/Iris_01_24_Pred.csv'),
-#             (f'{BASE2}/Iris_01_25_Pred.csv), (f'{BASE2}/Iris_01_26_Pred.csv'),
-#             (f'{BASE2}/Iris_01_27_Pred.csv), (f'{BASE2}/Iris_01_28_Pred.csv'),
-#             (f'{BASE2}/Iris_01_29_Pred.csv), (f'{BASE2}/Iris_01_30_Pred.csv'),
-#             (f'{BASE2}/Iris_02_1_Pred.csv), (f'{BASE2}/Iris_02_2_Pred.csv'),
-#             (f'{BASE2}/Iris_02_3_Pred.csv), (f'{BASE2}/Iris_02_4_Pred.csv'),
-#             (f'{BASE2}/Iris_02_5_Pred.csv), (f'{BASE2}/Iris_02_6_Pred.csv'),
-#             (f'{BASE2}/Iris_02_7_Pred.csv), (f'{BASE2}/Iris_02_8_Pred.csv'),
-#             (f'{BASE2}/Iris_02_9_Pred.csv), (f'{BASE2}/Iris_02_10_Pred.csv'),
-#             (f'{BASE2}/Iris_02_11_Pred.csv), (f'{BASE2}/Iris_02_12_Pred.csv'),
-#             (f'{BASE2}/Iris_02_13_Pred.csv), (f'{BASE2}/Iris_02_14_Pred.csv'),
-#             (f'{BASE2}/Iris_02_15_Pred.csv), (f'{BASE2}/Iris_02_16_Pred.csv'),
-#             (f'{BASE2}/Iris_02_17_Pred.csv), (f'{BASE2}/Iris_02_18_Pred.csv'),
-#             (f'{BASE2}/Iris_02_19_Pred.csv), (f'{BASE2}/Iris_02_20_Pred.csv')
-# ]
-# Train_list = [
-#     (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/Iris_12_1_Pred.csv'),
-#     (f'{BASE2}/Iris_01_3_Pred.csv'), (f'{BASE2}/Iris_12_2_Pred.csv'),
-#     (f'{BASE2}/Iris_01_5_Pred.csv'), (f'{BASE2}/Iris_12_5_Pred.csv'),
-#     (f'{BASE2}/Iris_01_7_Pred.csv'), (f'{BASE2}/Iris_12_8_Pred.csv')
-
-    # (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
-    # (f'{BASE2}/MNIST_12_1_Pred.csv'), (f'{BASE2}/MNIST_45_1_Pred.csv'),
-# ]
-Train_list = [
-    (f'{BASE2}/bc_1_Pred.csv'), (f'{BASE2}/bc_2_Pred.csv'),
-    (f'{BASE2}/Iris_01_1_Pred.csv'), (f'{BASE2}/MNIST_23_1_Pred.csv'),
-    (f'{BASE2}/Iris_12_1_Pred.csv'), (f'{BASE2}/MNIST_01_1_Pred.csv'),
-    (f'{BASE2}/Iris_02_1_Pred.csv'), (f'{BASE2}/MNIST_12_1_Pred.csv')
+COLORS = {
+    "true": "tab:blue",      # True/Permuted Data Shapley
+    "pred": "tab:purple",    # Predicted Data Shapley
+    "tmc":  "tab:orange"     # TMC Data Shapley
+}
+from matplotlib.lines import Line2D
+CLASS_LEGEND_HANDLES = [
+    Line2D([0], [0], marker='o', linestyle='None', markersize=8,
+           markerfacecolor='none', markeredgecolor='k', label='Class 0'),
+    Line2D([0], [0], marker='x', linestyle='None', markersize=8,
+           color='k', label='Class 1')
 ]
-# Train_list = [
-#     (f'{BASE2}/bc_1.csv_Pred.csv'), (f'{BASE2}/bc_2.csv_Pred.csv'),
-#     (f'{BASE2}/bc_3.csv_Pred.csv'), (f'{BASE2}/bc_4.csv_Pred.csv'),
-#     (f'{BASE2}/bc_5.csv_Pred.csv'), (f'{BASE2}/bc_6.csv_Pred.csv'),
-#     (f'{BASE2}/bc_7.csv_Pred.csv'), (f'{BASE2}/bc_8.csv_Pred.csv'),
-#     (f'{BASE2}/bc_9.csv_Pred.csv'), (f'{BASE2}/bc_10.csv_Pred.csv'),
-#     (f'{BASE2}/bc_11.csv_Pred.csv'), (f'{BASE2}/bc_12.csv_Pred.csv'),
-#     (f'{BASE2}/bc_13.csv_Pred.csv'), (f'{BASE2}/bc_14.csv_Pred.csv'),
-#     (f'{BASE2}/bc_15.csv_Pred.csv'), (f'{BASE2}/bc_16.csv_Pred.csv'),
-#     (f'{BASE2}/bc_17.csv_Pred.csv'), (f'{BASE2}/bc_18.csv_Pred.csv'),
-#     (f'{BASE2}/bc_19.csv_Pred.csv'), (f'{BASE2}/bc_20.csv_Pred.csv'),
-#     (f'{BASE2}/bc_21.csv_Pred.csv'), (f'{BASE2}/bc_22.csv_Pred.csv'),
-#     (f'{BASE2}/bc_23.csv_Pred.csv'), (f'{BASE2}/bc_24.csv_Pred.csv'),
-#     (f'{BASE2}/bc_25.csv_Pred.csv'), (f'{BASE2}/bc_26.csv_Pred.csv'),
-#     (f'{BASE2}/bc_27.csv_Pred.csv'), (f'{BASE2}/bc_28.csv_Pred.csv'),
-#     (f'{BASE2}/bc_29.csv_Pred.csv'), (f'{BASE2}/bc_30.csv_Pred.csv')
-#
-# ]
-# Train_list = [
-#             (f'{BASE2}/Iris_01_Pred.csv'),
-#             (f'{BASE2}/Iris_02_Pred.csv'),
-#             (f'{BASE2}/bc_1_Pred.csv'),
-#             (f'{BASE2}/bc_2_Pred.csv'),
-#             (f'{BASE2}/bc_3_Pred.csv'),
-#             (f'{BASE2}/MNIST_01_Pred.csv'),
-#             (f'{BASE2}/MNIST_12_Pred.csv'),
-#             (f'{BASE2}/MNIST_23_Pred.csv'),
-#             (f'{BASE2}/MNIST_34_Pred.csv'),
-#             (f'{BASE2}/MNIST_45_Pred.csv'),
-#             (f'{BASE2}/MNIST_56_Pred.csv'),
-#             (f'{BASE2}/MNIST_67_Pred.csv')
-# ]
 
-for train in Train_list:
-    df = pd.read_csv(train)
-    # true_vals = df['TrueDShap']
-    true_vals = df['PerDShap']
-    True_Shap = true_vals.to_numpy().reshape(-1, 1).flatten()
-    true_vals = np.asarray(True_Shap)
+def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str = None):
+    _ensure_dir(out_dir)
+    graph_dir = graph_dir or out_dir
+    _ensure_dir(graph_dir)
 
-    pred_vals = df['Pred_Shap']
-    pred_vals = np.asarray(pred_vals)
+    pairs = find_train_test_pairs(base_train_dir)
+    for train_csv, test_csv in pairs:
+        dlist = load_and_preprocess(train_csv, test_csv)
+        preds = predict(gnn, dlist)
 
-    mean_true = true_vals.mean()
-    mean_pred = pred_vals.mean()
-    N = len(true_vals)
-    indices = np.arange(N)
-    width = 0.25
+        df_train = pd.read_csv(train_csv)
+        df_train['Pred_Shap'] = preds
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        base_name = os.path.basename(train_csv).replace('.csv', '')
+        out_csv   = os.path.join(out_dir, f'{base_name}_Pred.csv')
+        df_train.to_csv(out_csv, index=False)
+        print('saved ➜', out_csv)
 
-    # Bar plot
-    ax1.bar(indices - width, true_vals, width, label='True Shapley', color='tab:blue', edgecolor='k', alpha=0.7)
-    ax1.bar(indices + width, pred_vals, width, label='Predicted Shapley', color='tab:green', edgecolor='k', alpha=0.7)
-    ax1.plot(indices, [mean_true] * N, '--', linewidth=2, color='tab:blue',
-             label=f'Mean True: {mean_true:.3f}')
-    ax1.plot(indices, [mean_pred] * N, '--', linewidth=2, color='tab:green',
-             label=f'Mean Pred: {mean_pred:.3f}')
-    ax1.set_xlabel('Sample Index', fontsize=12, weight='bold')
-    ax1.set_ylabel('Shapley Value', fontsize=12, weight='bold')
-    ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
-    ax1.grid(axis='y', linestyle='--', alpha=0.4)
-    ax1.legend(fontsize=10)
-    ax2.scatter(true_vals, pred_vals, s=80, color='tab:blue', alpha=0.6,
-                edgecolors='k', linewidth=0.5, label='Predicted vs True')
-    all_min = min(true_vals.min(), pred_vals.min())
-    all_max = max(true_vals.max(), pred_vals.max())
-    ax2.plot([all_min, all_max], [all_min, all_max], '--k', linewidth=1.5, label='y = x')
-    ax2.set_xlabel('True Shapley Values (normalized)', fontsize=12, weight='bold')
-    ax2.set_ylabel('Predicted Shapley Values', fontsize=12, weight='bold')
-    ax2.set_title('True vs Predicted (Scatter)', fontsize=13, weight='bold')
-    ax2.grid(True, linestyle='--', alpha=0.4)
-    ax2.legend(fontsize=10)
+        true_vals = df_train['PerDShap'].to_numpy()
+        pred_vals = df_train['Pred_Shap'].to_numpy()
+        y_labels = df_train['target'].to_numpy() if 'target' in df_train.columns else np.zeros_like(true_vals)
+        mean_true, mean_pred = true_vals.mean(), pred_vals.mean()
+        N = len(true_vals); idx = np.arange(N); width = 0.25
 
-    fig.suptitle(f'Shapley Comparison: {os.path.basename(train)}', fontsize=15, weight='bold')
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # leave space for suptitle
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-    out_name = os.path.basename(train).replace('.csv', '') + '_ShapleyCompare.png'
-    out_path = os.path.join(GRAPH_DIR, out_name)
-    plt.savefig(out_path, dpi=300)
-    plt.show()
-    print('saved ➜', out_path)
+        # bar
+        ax1.bar(idx - width, true_vals, width, label='True Shapley', color=COLORS["true"],
+                edgecolor='k', alpha=0.7)
+        ax1.bar(idx + width, pred_vals, width, label='Predicted Shapley', color=COLORS["pred"],
+                edgecolor='k', alpha=0.7)
+        ax1.plot(idx, [mean_true]*N, '--', linewidth=2, color=COLORS["true"],
+                 label=f'Mean True: {mean_true:.3f}')
+        ax1.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"],
+                 label=f'Mean Pred: {mean_pred:.3f}')
+        ax1.set_xlabel('Sample Index', fontsize=12, weight='bold')
+        ax1.set_ylabel('Shapley Value', fontsize=12, weight='bold')
+        ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
+        ax1.grid(axis='y', linestyle='--', alpha=0.4); ax1.legend(fontsize=10)
+
+        # linear
+        lo, hi = min(true_vals.min(), pred_vals.min()), max(true_vals.max(), pred_vals.max())
+
+        pad = 0.02 * (hi - lo if hi > lo else 1.0)
+        ax2.set_xlim(lo - pad, hi + pad)
+        ax2.set_ylim(lo - pad, hi + pad)
+        ax2.set_aspect('equal', adjustable='box')
+
+        mask0 = (y_labels == 0)
+        mask1 = (y_labels == 1)
+
+        # class 0: hollow circle, class 1: cross
+        ax2.scatter(true_vals[mask0], pred_vals[mask0],
+                    s=80, facecolors='none', edgecolors=COLORS["pred"], linewidth=1.2,
+                    marker='o', label='Pred vs True (class 0)')
+        ax2.scatter(true_vals[mask1], pred_vals[mask1],
+                    s=80, color=COLORS["pred"], marker='x', linewidth=1.2,
+                    label='Pred vs True (class 1)')
+        ax2.plot([lo, hi], [lo, hi], '--k', linewidth=1.5, label='y = x')
+
+        ax2.set_xlabel('True Shapley Values (normalized)', fontsize=12, weight='bold')
+        ax2.set_ylabel('Predicted Shapley Values', fontsize=12, weight='bold')
+        ax2.set_title('True vs Predicted (Scatter)', fontsize=13, weight='bold')
+        ax2.grid(True, linestyle='--', alpha=0.4)
+        legend1 = ax2.legend(fontsize=10, loc='upper left')
+        ax2.add_artist(legend1)
+        ax2.legend(handles=CLASS_LEGEND_HANDLES, fontsize=10, loc='lower right')
+
+        fig.suptitle(f'Shapley Comparison: {os.path.basename(train_csv)}', fontsize=15, weight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        out_png = os.path.join(graph_dir, f'{base_name}_ShapleyCompare.png')
+        plt.savefig(out_png, dpi=300); plt.close()
+        print('saved ➜', out_png)
+
+def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str,
+                       a=0.05, b=0.40, ylim=(40,105), random_iters=10):
+    _ensure_dir(out_dir)
+
+    for base_name in holdout_bases:
+        paths = _mk_paths(base_test_dir, base_name)
+
+        dlist = load_and_preprocess(paths['train_like'], paths['test'])
+        preds = predict(gnn, dlist)
+
+        df_tr_like = pd.read_csv(paths['train_like'])
+        df_tr_like['Pred_Shap'] = preds
+        out_pred_csv = os.path.join(out_dir, f'{base_name}_Pred.csv')
+        df_tr_like.to_csv(out_pred_csv, index=False)
+        print('saved ➜', out_pred_csv)
+
+        df_test = pd.read_csv(paths['test'])
+
+        X_train = df_tr_like.drop(columns=['target','PerDShap','Pred_Shap']).astype(float)
+        X_test  = df_test.drop(columns=['target']).astype(float)
+        #X_test  = X_test.reindex(columns=X_train.columns, fill_value=0.0)
+
+        y_train = df_tr_like['target'].to_numpy()
+        y_test  = df_test['target'].to_numpy()
+
+        df_tmc   = pd.read_csv(paths['tmc'])
+        TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+        Per_DShap = df_tr_like['PerDShap'].to_numpy()
+        Pred_Shap = preds
+
+        # Removal Plots
+        desc_png = os.path.join(out_dir, f'{base_name}_Removal_Desc.png')
+        _ = PerformancePlot_Removal(
+            vals={'Permuted Data Shapley': Per_DShap,
+                  'TMC Data Shapley': TMC_Shap,
+                  'Predicted Shapley': Pred_Shap},
+            X_train=X_train.to_numpy(), y_train=y_train,
+            X_test=X_test.to_numpy(),   y_test=y_test,
+            a=a, b=b, ylim=ylim,
+            order='descending', random_iters=random_iters,
+            save_path=desc_png
+        )
+        print('saved ➜', desc_png)
+
+        asc_png = os.path.join(out_dir, f'{base_name}_Removal_Asc.png')
+        _ = PerformancePlot_Removal(
+            vals={'Permuted Data Shapley': Per_DShap,
+                  'TMC Data Shapley': TMC_Shap,
+                  'Predicted Shapley': Pred_Shap},
+            X_train=X_train.to_numpy(), y_train=y_train,
+            X_test=X_test.to_numpy(),   y_test=y_test,
+            a=a, b=b, ylim=ylim,
+            order='ascending', random_iters=random_iters,
+            save_path=asc_png
+        )
+        print('saved ➜', asc_png)
+
+        # Magnitude Comparison and Linear Comparison
+        tmc_vals  = np.asarray(TMC_Shap)
+        per_vals  = np.asarray(Per_DShap)
+        pred_vals = np.asarray(Pred_Shap)
+        mean_tmc, mean_per, mean_pred = tmc_vals.mean(), per_vals.mean(), pred_vals.mean()
+        N = len(per_vals); idx = np.arange(N); width = 0.27
+
+        plt.figure(figsize=(11,6))
+        plt.bar(idx - width, per_vals,  width, label='Permuted Shapley', color=COLORS["true"],
+                edgecolor='k', alpha=0.7)
+        plt.bar(idx,          tmc_vals, width, label='TMC Shapley',      color=COLORS["tmc"],
+                edgecolor='k', alpha=0.7)
+        plt.bar(idx + width,  pred_vals, width, label='Predicted Shapley', color=COLORS["pred"],
+                edgecolor='k', alpha=0.7)
+        plt.plot(idx, [mean_per]*N,  '--', linewidth=2, color=COLORS["true"],
+                 label=f'Avg Permuted ({mean_per:.3f})')
+        plt.plot(idx, [mean_tmc]*N,  '--', linewidth=2, color=COLORS["tmc"],
+                 label=f'Avg TMC ({mean_tmc:.3f})')
+        plt.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"],
+                 label=f'Avg Pred ({mean_pred:.3f})')
+        plt.xlabel('Sample Index'); plt.ylabel('Shapley Value')
+        plt.title(f'Comparison of Shapley Values — {base_name}')
+        plt.grid(axis='y', linestyle='--', alpha=0.4); plt.legend(); plt.tight_layout()
+        bar_png = os.path.join(out_dir, f'{base_name}_ShapleyCompare.png')
+        plt.savefig(bar_png, dpi=500); plt.close()
+        print('saved ➜', bar_png)
+
+        lo = min(per_vals.min(), tmc_vals.min(), pred_vals.min())
+        hi = max(per_vals.max(), tmc_vals.max(), pred_vals.max())
+
+        mask0 = (y_train == 0)
+        mask1 = (y_train == 1)
+
+        plt.figure(figsize=(8.8,8.8))
+
+        # Pred vs Permuted (purple)
+        plt.scatter(per_vals[mask0], pred_vals[mask0],
+                    s=120, facecolors='none', edgecolors=COLORS["pred"], linewidth=1.3,
+                    marker='o', label='Pred vs Permuted (class 0)')
+        plt.scatter(per_vals[mask1], pred_vals[mask1],
+                    s=120, color=COLORS["pred"], marker='x', linewidth=1.3,
+                    label='Pred vs Permuted (class 1)')
+
+        # TMC vs Permuted (orange)
+        plt.scatter(per_vals[mask0], tmc_vals[mask0],
+                    s=120, facecolors='none', edgecolors=COLORS["tmc"], linewidth=1.3,
+                    marker='o', label='TMC vs Permuted (class 0)')
+        plt.scatter(per_vals[mask1], tmc_vals[mask1],
+                    s=120, color=COLORS["tmc"], marker='x', linewidth=1.3,
+                    label='TMC vs Permuted (class 1)')
+
+        plt.plot([lo - 0.005, hi + 0.005], [lo - 0.005, hi + 0.005],
+                 '--k', linewidth=1.5, label='y = x')
+        plt.xlabel('Permuted Shapley Value'); plt.ylabel('Other Shapley Values')
+        plt.title(f'Linear Comparison — {base_name}')
+        plt.grid(True, linestyle='--', alpha=0.5)
+
+        leg1 = plt.legend(fontsize=10, loc='upper left')
+        plt.gca().add_artist(leg1)
+        plt.legend(handles=CLASS_LEGEND_HANDLES, fontsize=10, loc='lower right')
+
+        plt.tight_layout()
+        line_png = os.path.join(out_dir, f'{base_name}_LinearCompare.png')
+        plt.savefig(line_png, dpi=500); plt.close()
+        print('saved ➜', line_png)
+
+def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_bases,
+                        in_channels=30, hidden_channels=128, heads=4,
+                        epochs=1000, lr=5e-6, ckpt_every=10,
+                        a=0.05, b=0.40, ylim=(40,105), random_iters=10):
+    _ensure_dir(OUT_DIR)
+    pairs = find_train_test_pairs(BASE_TRAIN)
+    dataset_graphs = [load_and_preprocess(tr, te) for tr, te in pairs]
+
+    gnn = GINShap(in_channels=in_channels, hidden_channels=hidden_channels, heads=heads)
+    _ = train(gnn, dataset_graphs, epochs=epochs, lr=lr,
+              base_test_dir=BASE_TEST, holdout_bases=holdout_bases, out_dir=OUT_DIR,
+              ckpt_every=ckpt_every, checkpoint_dir=os.path.join(OUT_DIR, "checkpoints"),
+              use_onecycle=True, max_lr=3e-4, onecycle_kwargs = dict(pct_start = 0.3, anneal_strategy = 'cos',
+              cycle_momentum = True, base_momentum = 0.85, max_momentum = 0.95, div_factor = 25.0,
+              final_div_factor = 1e4, three_phase = False))
+
+    train_dir = os.path.join(OUT_DIR, "diagnostics_train_final"); _ensure_dir(train_dir)
+    diagnose_train_sets(gnn, base_train_dir=BASE_TRAIN, out_dir=train_dir, graph_dir=train_dir)
+
+    test_dir  = os.path.join(OUT_DIR, "diagnostics_test_final");  _ensure_dir(test_dir)
+    diagnose_test_sets(gnn, base_test_dir=BASE_TEST, holdout_bases=holdout_bases,
+                       out_dir=test_dir, a=a, b=b, ylim=ylim, random_iters=random_iters)
+    return gnn
+
+
+
+' To examine model performance at checkpoints'
+def load_model_from_ckpt(ckpt_path, in_channels=30, hidden_channels=128, heads=4, strict=True):
+    model = GINShap(in_channels=in_channels, hidden_channels=hidden_channels, heads=heads)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt['model_state'], strict=strict)
+    model.to(device).eval()
+    print(f'loaded epoch {ckpt.get("epoch", "?" )} from {ckpt_path}')
+    return model, ckpt.get('epoch', None)
+
+def diagnose_from_checkpoints(ckpt_dir, epochs,
+                              base_train_dir, base_test_dir, holdout_bases, out_root,
+                              in_channels=30, hidden_channels=128, heads=4,
+                              a=0.05, b=0.40, ylim=(40,105), random_iters=10):
+    for ep in epochs:
+        ck = os.path.join(ckpt_dir, f'model_ep{ep}.pt')
+        if not os.path.exists(ck):
+            print(f'⚠️ checkpoint not found: {ck}')
+            continue
+        gnn_ep, loaded_ep = load_model_from_ckpt(ck, in_channels, hidden_channels, heads)
+
+        out_dir_ep_train = os.path.join(out_root, f"diagnostics_train_ep{ep}")
+        out_dir_ep_test  = os.path.join(out_root, f"diagnostics_test_ep{ep}")
+        os.makedirs(out_dir_ep_train, exist_ok=True)
+        os.makedirs(out_dir_ep_test, exist_ok=True)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TRAIN ===')
+        diagnose_train_sets(gnn_ep, base_train_dir=base_train_dir,
+                            out_dir=out_dir_ep_train, graph_dir=out_dir_ep_train)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TEST ===')
+        diagnose_test_sets(gnn_ep, base_test_dir=base_test_dir, holdout_bases=holdout_bases,
+                           out_dir=out_dir_ep_test, a=a, b=b, ylim=ylim, random_iters=random_iters)
+
+        try:
+            train_csv = os.path.join(out_root, "Training_MSE_full.csv")
+            test_csv = os.path.join(out_root, "Holdout_MSE_full.csv")
+            if os.path.exists(train_csv) and os.path.exists(test_csv):
+                df_tr = pd.read_csv(train_csv)
+                df_te = pd.read_csv(test_csv)
+                # keep only selected epochs
+                sel = pd.DataFrame({"epoch": epochs})
+                df_tr_sel = sel.merge(df_tr, on="epoch", how="left")
+                df_te_sel = sel.merge(df_te[["epoch", "avg_mse"]], on="epoch", how="left")
+
+                plt.figure(figsize=(6, 4))
+                plt.plot(df_te_sel["epoch"], df_te_sel["avg_mse"], label="Test (avg MSE)",
+                         linewidth=1.2, alpha=0.9)  # lighter
+                plt.plot(df_tr_sel["epoch"], df_tr_sel["train_mse"], label="Train (MSE)",
+                         linewidth=1.2, alpha=0.9)  # lighter
+                plt.xlabel("Epoch");
+                plt.ylabel("MSE")
+                plt.title("Train vs Test MSE — selected checkpoints")
+                plt.grid(True, ls='--', alpha=0.5);
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(os.path.join(out_root, "Train_vs_Test_MSE_selected_epochs.png"))
+                plt.close()
+        except Exception as e:
+            print("[warn] could not create Train_vs_Test_MSE_selected_epochs:", e)
+
+def load_model_from_ckpt(ckpt_path, in_channels=20, hidden_channels=128, heads=4, strict=True):
+    model = GINShap(in_channels=in_channels, hidden_channels=hidden_channels, heads=heads)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt['model_state'], strict=strict)
+    model.to(device).eval()
+    ep = ckpt.get("epoch", None)
+    print(f'loaded epoch {ep if ep is not None else "?"} from {ckpt_path}')
+    return model, ep
+
+def diagnose_from_checkpoints(ckpt_dir, epochs,
+                              base_train_dir, base_test_dir, holdout_bases, out_root,
+                              in_channels=20, hidden_channels=128, heads=4,
+                              a=0.05, b=0.40, ylim=(40,105), random_iters=10):
+
+    for ep in epochs:
+        ck = os.path.join(ckpt_dir, f'model_ep{ep}.pt')
+        if not os.path.exists(ck):
+            print(f'⚠️ checkpoint not found: {ck}')
+            continue
+        gnn_ep, loaded_ep = load_model_from_ckpt(ck, in_channels, hidden_channels, heads)  # [FIX] unpack works
+
+        out_dir_ep_train = os.path.join(out_root, f"diagnostics_train_ep{ep}")
+        out_dir_ep_test  = os.path.join(out_root, f"diagnostics_test_ep{ep}")
+        os.makedirs(out_dir_ep_train, exist_ok=True)
+        os.makedirs(out_dir_ep_test, exist_ok=True)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TRAIN ===')
+        diagnose_train_sets(gnn_ep, base_train_dir=base_train_dir,
+                            out_dir=out_dir_ep_train, graph_dir=out_dir_ep_train)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TEST ===')
+        diagnose_test_sets(gnn_ep, base_test_dir=base_test_dir, holdout_bases=holdout_bases,
+                           out_dir=out_dir_ep_test, a=a, b=b, ylim=ylim, random_iters=random_iters)
+
+    try:
+        train_csv = os.path.join(out_root, "Training_MSE_full.csv")
+        test_csv = os.path.join(out_root, "Holdout_MSE_full.csv")
+        if os.path.exists(train_csv) and os.path.exists(test_csv):
+            # Load full histories once
+            df_tr = pd.read_csv(train_csv).sort_values("epoch")  # columns: epoch, train_mse
+            df_te = pd.read_csv(test_csv).sort_values("epoch")  # columns: epoch, ... , avg_mse
+
+            # [ADD] For each requested checkpoint ep, plot from epoch 0 up to ep
+            for ep in sorted(set(epochs)):
+                df_tr_u = df_tr[df_tr["epoch"] <= ep].copy()
+                df_te_u = df_te[df_te["epoch"] <= ep][["epoch", "avg_mse"]].copy()
+                df_u = df_tr_u.merge(df_te_u, on="epoch", how="left")
+                df_u = df_u[df_u["epoch"] >= 20]
+
+                if df_u.empty:
+                    print(f"[warn] no data to plot up to epoch {ep}")
+                    continue
+
+                plt.figure(figsize=(6, 4))
+                plt.plot(df_u["epoch"], df_u["avg_mse"], label="Test (avg MSE)",
+                         linewidth=1.2, alpha=0.9)  # lighter & visible
+                plt.plot(df_u["epoch"], df_u["train_mse"], label="Train (MSE)",
+                         linewidth=1.2, alpha=0.9)  # lighter & visible
+                plt.xlabel("Epoch");
+                plt.ylabel("MSE")
+                plt.title(f"Train vs Test MSE — 0 to {ep} epochs")
+                plt.grid(True, ls='--', alpha=0.5);
+                plt.legend()
+                plt.tight_layout()
+                # [ADD] distinct file per checkpoint
+                plt.savefig(os.path.join(out_root, f"Train_vs_Test_MSE_upto_epoch_{ep}.png"))
+                plt.close()
+
+            sel = pd.DataFrame({"epoch": epochs})
+            df_tr_sel = sel.merge(df_tr, on="epoch", how="left")
+            df_te_sel = sel.merge(df_te[["epoch", "avg_mse"]], on="epoch", how="left")
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(df_te_sel["epoch"], df_te_sel["avg_mse"], label="Test (avg MSE)",
+                     linewidth=1.2, alpha=0.9)
+            plt.plot(df_tr_sel["epoch"], df_tr_sel["train_mse"], label="Train (MSE)",
+                     linewidth=1.2, alpha=0.9)
+            plt.xlabel("Epoch");
+            plt.ylabel("MSE")
+            plt.title("Train vs Test MSE — selected checkpoints")
+            plt.grid(True, ls='--', alpha=0.5);
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_root, "Train_vs_Test_MSE_selected_epochs.png"))
+            plt.close()
+    except Exception as e:
+        print("[warn] could not create cumulative Train/Test MSE plots:", e)
+
+
+if __name__ == "__main__":
+    BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/PCA_30D/Train'
+    BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/PCA_30D/Test'
+    OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251013/Trial04'
+    HOLDOUTS   = ['MNIST_01_1', 'MNIST_01_2', 'MNIST_01_3']
+
+    # Train and Diagnosis
+    _ = train_then_diagnose(
+        BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
+        in_channels=30, hidden_channels=128, heads=4,
+        epochs=200, ckpt_every=None
+    )
+
+    # # Manually output diagnosis from checkpoints
+    # CKPT_DIR = os.path.join(OUT_DIR, "checkpoints")
+    # my_epochs = [70]
+    # diagnose_from_checkpoints(
+    #     ckpt_dir=CKPT_DIR, epochs=my_epochs,
+    #     base_train_dir=BASE_TRAIN, base_test_dir=BASE_TEST,
+    #     holdout_bases=HOLDOUTS, out_root=OUT_DIR,
+    #     in_channels=10, hidden_channels=128, heads=4
+    # )

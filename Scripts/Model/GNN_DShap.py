@@ -28,10 +28,10 @@ if torch.cuda.is_available():
 
 
 '''
-1. Randomized SVD
+1. SVD
 '''
 'Flip Sign'
-def filp_pe_sign(x, method='l0'):
+def flip_pe_sign(x, method='l0'):
     assert method in ['none', 'pos', 'sum', 'l1', 'l2', 'linf', 'random']
     if method == 'none':
         return x
@@ -72,13 +72,7 @@ def SVD_Transform(A, d=10):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
     X_svd = U[:, :d] * np.sqrt(S[:d])
     X_t = torch.tensor(X_svd, dtype=torch.float)
-    # A_t = torch.tensor(A, dtype=torch.float, device=device)
-    # U, S, Vh = torch.linalg.svd(A_t, full_matrices=False)
-    # U_d = U[:, :d]
-    # S_d = S[:d]
-    # X_svd = U_d * torch.sqrt(S_d)
-    # X_t = X_svd
-    X_t = filp_pe_sign(X_t, method='sum')  # l0 (positive) / sum
+    X_t = flip_pe_sign(X_t, method='sum')  # l0 (positive) / sum
     return X_t.numpy()
 
 
@@ -126,11 +120,11 @@ def build_graph(X_raw, y_raw, phi, total_util, c, d = 10):
 '''
 def load_and_preprocess(train_csv, test_csv, d=10):
     df_train = pd.read_csv(train_csv)
-    X_raw = pd.get_dummies(df_train.drop(columns=['target','PerDShap'])).astype(float).to_numpy()
+    X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
     y_raw = df_train['target'].to_numpy().astype(int)
     phi = df_train['PerDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
-    X_test = pd.get_dummies(df_test.drop(columns=['target'])).astype(float).to_numpy()
+    X_test = df_test.drop(columns=['target']).astype(float).to_numpy()
     y_test = df_test['target'].to_numpy()
 
     lr_full = LogisticRegression(max_iter=100, random_state=23)
@@ -154,7 +148,7 @@ class GINShap(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
         super().__init__()
         def mlp(i, o):
-            return Sequential(Linear(i, o), LayerNorm(o), LeakyReLU(), Linear(o, o))
+            return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
 
         # 5 Parallel GIN Branches
         self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
@@ -166,7 +160,7 @@ class GINShap(torch.nn.Module):
                 convs.append(
                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
-                            activation = LeakyReLU())
+                            activation = ReLU())
                 )
             self.branches.append(convs)  # length = 5
 
@@ -178,7 +172,7 @@ class GINShap(torch.nn.Module):
         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 
         # Z
-        self.Z = Sequential(Linear(d_concat, hidden_channels),LeakyReLU())
+        self.Z = Sequential(Linear(d_concat, hidden_channels),ReLU())
 
         # MLP (widen by hidden_channels * 2)
         self.out = Sequential(
@@ -240,125 +234,98 @@ class GINShap(torch.nn.Module):
 
         return self.out(output_final)
 
-
-'Version B: With LayerNorm & 1 shared conv stack'
-class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
-        super().__init__()
-        def mlp(i, o):
-            return Sequential(Linear(i, o), LayerNorm(o), LeakyReLU(), Linear(o, o))
-
-        # 5 Parallel GIN Branches
-        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.shared_convs = torch.nn.ModuleList([
-            GINConv(mlp(in_channels, hidden_channels),
-                    aggregator_type='sum', init_eps=0.1, learn_eps=True,
-                    activation=LeakyReLU()),
-            GINConv(mlp(hidden_channels, hidden_channels),
-                    aggregator_type='sum', init_eps=0.1, learn_eps=True,
-                    activation=LeakyReLU()),
-            GINConv(mlp(hidden_channels, hidden_channels),
-                    aggregator_type='sum', init_eps=0.1, learn_eps=True,
-                    activation=LeakyReLU()),
-        ])
-
-        self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
-
-        # GT (via TransformerEncoder)
-        d_concat = hidden_channels * len(C_List)
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
-
-        # Z
-        self.Z = Sequential(Linear(d_concat, hidden_channels),LeakyReLU())
-
-        # MLP (widen by hidden_channels * 2)
-        self.out = Sequential(
-            Linear(hidden_channels + 2, hidden_channels * 2),
-            ReLU(),
-            Linear(hidden_channels * 2, 100),
-            ReLU(),
-            Linear(100, out_channels)
-        )
-
-    def forward(self, data_list):
-        data = data_list[0].to(device)
-        x0 = data.x # Extract nodes
-        ei = data.edge_index # Extract edge indices
-
-        # DGL Graph
-        g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
-
-        # Parallel GIN
-        output_GIN = []
-
-        for idx, gdata in enumerate(data_list):
-            node_input = gdata.x.to(device)
-            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)  # (E,)
-            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)  # (E,)
-
-            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
-            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label  # (E,)
-
-            g = dgl.graph((gdata.edge_index[0], gdata.edge_index[1]),
-                          num_nodes=node_input.size(0), device=device)
-            g.edata['w'] = edge_weight
-            for conv in self.shared_convs:
-                node_input = conv(g, node_input, edge_weight=g.edata['w'])
-            output_GIN.append(node_input)
-
-        # Skip-Connection
-        output_GIN = torch.cat(output_GIN, dim = 1)
-        output_skip = output_GIN + self.skip_lin(x0)
-
-        # GT
-        output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*5)
-        output_gt = self.gt(output_skip)
-        output_gt = output_gt.squeeze(0)
-
-        # H
-        output_h = self.Z(output_gt)
-
-        # total utility + (N/10) -> MLP
-        N = output_h.size(0)
-        total_util = data.total_util
-        utility_vec = total_util.expand(N, 1)
-        NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
-        output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
-
-        return self.out(output_final)
+# 'Version B: With LayerNorm & 1 shared conv stack'
+# class GINShap(torch.nn.Module):
+#     def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
+#         super().__init__()
+#         def mlp(i, o):
+#             return Sequential(Linear(i, o), LayerNorm(o), LeakyReLU(), Linear(o, o))
+#
+#         # 5 Parallel GIN Branches
+#         self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
+#         self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
+#         self.shared_convs = torch.nn.ModuleList([
+#             GINConv(mlp(in_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#             GINConv(mlp(hidden_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#             GINConv(mlp(hidden_channels, hidden_channels),
+#                     aggregator_type='sum', init_eps=0.1, learn_eps=True,
+#                     activation=LeakyReLU()),
+#         ])
+#
+#         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
+#
+#         # GT (via TransformerEncoder)
+#         d_concat = hidden_channels * len(C_List)
+#         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
+#         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
+#
+#         # Z
+#         self.Z = Sequential(Linear(d_concat, hidden_channels),LeakyReLU())
+#
+#         # MLP (widen by hidden_channels * 2)
+#         self.out = Sequential(
+#             Linear(hidden_channels + 2, hidden_channels * 2),
+#             ReLU(),
+#             Linear(hidden_channels * 2, 100),
+#             ReLU(),
+#             Linear(100, out_channels)
+#         )
+#
+#     def forward(self, data_list):
+#         data = data_list[0].to(device)
+#         x0 = data.x # Extract nodes
+#         ei = data.edge_index # Extract edge indices
+#
+#         # DGL Graph
+#         g = dgl.graph((ei[0], ei[1]), num_nodes = x0.size(0))
+#
+#         # Parallel GIN
+#         output_GIN = []
+#
+#         for idx, gdata in enumerate(data_list):
+#             node_input = gdata.x.to(device)
+#             edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)  # (E,)
+#             edge_attr_label = gdata.edge_attr_label.view(-1).to(device)  # (E,)
+#
+#             weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
+#             edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label  # (E,)
+#
+#             g = dgl.graph((gdata.edge_index[0], gdata.edge_index[1]),
+#                           num_nodes=node_input.size(0), device=device)
+#             g.edata['w'] = edge_weight
+#             for conv in self.shared_convs:
+#                 node_input = conv(g, node_input, edge_weight=g.edata['w'])
+#             output_GIN.append(node_input)
+#
+#         # Skip-Connection
+#         output_GIN = torch.cat(output_GIN, dim = 1)
+#         output_skip = output_GIN + self.skip_lin(x0)
+#
+#         # GT
+#         output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*5)
+#         output_gt = self.gt(output_skip)
+#         output_gt = output_gt.squeeze(0)
+#
+#         # H
+#         output_h = self.Z(output_gt)
+#
+#         # total utility + (N/10) -> MLP
+#         N = output_h.size(0)
+#         total_util = data.total_util
+#         utility_vec = total_util.expand(N, 1)
+#         NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
+#         output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
+#
+#         return self.out(output_final)
 
 
 '''
 5. Training
 '''
-# def listnet_loss(phi_hat, phi_true, tau = 0.01):
-#     log_p_hat = F.log_softmax(phi_hat/tau, dim = 0)
-#     p_true = F.softmax(phi_true/tau, dim = 0)
-#     return -(p_true * log_p_hat).sum()
-
-# def ranknet_loss(phi_hat, phi_true):
-#     N = phi_hat.size(0)
-#     idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
-#     S = torch.sign(phi_true[idx_i] - phi_true[idx_j])
-#     diffs = phi_hat[idx_i] - phi_hat[idx_j]
-#     return F.softplus(-S * diffs).mean()
-
-# def pairwise_rank_loss(phi_hat, phi_true, margin = 0):
-#     N = phi_hat.size(0)
-#     idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
-#     y = torch.sign(phi_true[idx_i] - phi_true[idx_j])
-#     return F.margin_ranking_loss(phi_hat[idx_i], phi_hat[idx_j], y, margin = margin)
-
-# def BPR_loss(phi_hat, phi_true):
-#     N = phi_true.size(0)
-#     idx_i, idx_j = torch.triu_indices(N, N, offset = 1)
-#     mask = (phi_true[idx_i] > phi_true[idx_j])
-#     pos_i = idx_i[mask]
-#     neg_j = idx_j[mask]
-#     return -F.logsigmoid(phi_hat[pos_i] - phi_hat[neg_j]).mean()
-
 def train(model, dataset_graphs, epochs=500, lr=1e-5):
     model.to(device)
 
@@ -620,14 +587,24 @@ def find_train_test_pairs(directory):
 
 def _mk_paths(base_test_dir: str, base_name: str):
     parts = base_name.split("_")
-    if len(parts) != 3:
+    if len(parts) == 3:
+        # MNIST-style: MNIST_{ab}_{i}
+        prefix, ab, i = parts[0], parts[1], parts[2]
+        train_like_csv = os.path.join(base_test_dir, base_name)
+        test_csv       = os.path.join(base_test_dir, f"{prefix}_{ab}_test_{i}")
+        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_{ab}_TMC_{i}")
+        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
+
+    elif len(parts) == 2:
+        # Two-part style: <prefix>_{i} (e.g., bc_1)
+        prefix, i = parts[0], parts[1]
+        train_like_csv = os.path.join(base_test_dir, base_name)
+        test_csv       = os.path.join(base_test_dir, f"{prefix}_test_{i}")
+        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_TMC_{i}")
+        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
+
+    else:
         raise ValueError(f"Unexpected base_name format: {base_name}")
-    ab = parts[1]
-    c  = parts[2]
-    train_like_csv = os.path.join(base_test_dir, base_name)
-    test_csv       = os.path.join(base_test_dir, f"MNIST_{ab}_test_{c}")
-    tmc_csv        = os.path.join(base_test_dir, f"MNIST_{ab}_TMC_{c}")
-    return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
 
 def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str = None):
     _ensure_dir(out_dir)
@@ -699,8 +676,8 @@ def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str,
 
         df_test = pd.read_csv(paths['test'])
 
-        X_train = pd.get_dummies(df_tr_like.drop(columns=['target','PerDShap','Pred_Shap']), dtype=float)
-        X_test  = pd.get_dummies(df_test.drop(columns=['target']), dtype=float)
+        X_train = df_tr_like.drop(columns=['target','PerDShap','Pred_Shap']).astype(float)
+        X_test  = df_test.drop(columns=['target']).astype(float)
         X_test  = X_test.reindex(columns=X_train.columns, fill_value=0.0)
 
         y_train = df_tr_like['target'].to_numpy()
@@ -801,17 +778,50 @@ def train_then_diagnose(BASE_TRAIN: str,
 
     return gnn
 
-BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Train'
-BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test'
-OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250915/Trial02'
-HOLDOUTS   = ['MNIST_17_1', 'MNIST_17_2', 'MNIST_17_3']
+# BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Train'
+# BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test'
+# OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250915/Trial02'
+# HOLDOUTS   = ['MNIST_17_1', 'MNIST_17_2', 'MNIST_17_3']
+#
+# gnn = train_then_diagnose(
+#     BASE_TRAIN=BASE_TRAIN,
+#     BASE_TEST=BASE_TEST,
+#     OUT_DIR=OUT_DIR,
+#     holdout_bases=HOLDOUTS,
+#     in_channels=10, hidden_channels=128, heads=4,
+#     epochs=1500, lr=1e-6,
+#     a=0.05, b=0.40, ylim=(40,105), random_iters=10
+# )
 
-gnn = train_then_diagnose(
-    BASE_TRAIN=BASE_TRAIN,
-    BASE_TEST=BASE_TEST,
-    OUT_DIR=OUT_DIR,
-    holdout_bases=HOLDOUTS,
-    in_channels=10, hidden_channels=128, heads=4,
-    epochs=1500, lr=1e-6,
-    a=0.05, b=0.40, ylim=(40,105), random_iters=10
+PARAMS = dict(
+    BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialF_BC/Train',
+    BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialF_BC/Test',
+    OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/251005/Trial03',
+    holdout_bases = ['bc_1', 'bc_2', 'bc_3'],
+
+    # Pre-Processing
+    d=10,
+    C_List=(0.25, 0.5, 1, 2, 4),
+
+    # model
+    in_channels = 10,
+    hidden_channels = 128,
+    heads = 4,
+    epochs = 1500,
+    lr = 5e-5,
+
+    # diagnostic plots
+    a = 0.05,
+    b = 0.40,
+    ylim = (40, 105),
+    random_iters = 10,
 )
+C_List = list(PARAMS["C_List"])
+
+model_param = [
+    "BASE_TRAIN","BASE_TEST","OUT_DIR","holdout_bases",
+    "in_channels","hidden_channels","heads","epochs","lr",
+    "a","b","ylim","random_iters"
+]
+param_setting = {k: PARAMS[k] for k in model_param}
+gnn = train_then_diagnose(**param_setting)

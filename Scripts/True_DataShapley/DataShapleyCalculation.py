@@ -191,6 +191,58 @@ def DataShapley(X, y, X_test, y_test):
 #         DShap[i] = sum(results)
 #     return DShap
 
+''' 2. Permutated-Based Shapley Value '''
+def Per_DShap(X, y, X_test, y_test, n_permutations = 1000,
+    model_builder=lambda: LogisticRegression(max_iter=200, n_jobs=1), random_state=None, progress=True):
+
+    X_np = X.to_numpy() if hasattr(X, "to_numpy") else np.asarray(X)
+    y_np = y.to_numpy() if hasattr(y, "to_numpy") else np.asarray(y)
+    Xv = X_test.to_numpy() if hasattr(X_test, "to_numpy") else np.asarray(X_test)
+    yv = y_test.to_numpy() if hasattr(y_test, "to_numpy") else np.asarray(y_test)
+
+    N = len(X_np)
+    if len(y_np) != N:
+        raise ValueError("X and y must have the same number of rows")
+
+    baseline = 0.0
+
+    # Utility function V(S)
+    def utility(subset_idx):
+        if len(subset_idx) == 0:
+            return baseline
+        ys = y_np[subset_idx]
+        if len(np.unique(ys)) < 2:
+            return baseline
+        clf = model_builder()
+        clf.fit(X_np[subset_idx], ys)
+        return float(clf.score(Xv, yv))
+
+    rng = np.random.default_rng(random_state)
+    phi = np.zeros(N, dtype=float)
+    counts = np.zeros(N, dtype=int)
+
+    iterator = range(n_permutations)
+    if progress:
+        try:
+            from tqdm import tqdm
+            iterator = tqdm(iterator, desc="Permutation Shapley", unit="perm")
+        except Exception:
+            pass
+
+    for _ in iterator:
+        perm = rng.permutation(N)
+        prev_v = baseline
+        for j in range(1, N + 1):
+            i = perm[j - 1]
+            S = perm[:j]
+            vj = utility(S)
+            mc = vj - prev_v  # marginal contribution of i
+            counts[i] += 1
+            phi[i] += (mc - phi[i]) / counts[i]
+            prev_v = vj
+
+    return phi
+
 
 ''' 2. Experiment on Iris Dataset '''
 # iris = load_iris()
@@ -343,11 +395,12 @@ def DataShapley(X, y, X_test, y_test):
 #             a=0.03, b=0.5, ylim=(60, 100), order='ascending', random_iters=10, save_path=path)
 
 'Automatic Generation'
-n_trials = 20
-m = 10
-a = 1
-b = 2
-save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/Group28'
+n_trials = 2
+m = 1000
+a = 0
+b = 1
+# save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/Group28'
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Iris_01'
 #save_dir = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V3'
 model = 'logistic'
 problem = 'classification'
@@ -380,12 +433,21 @@ for i in range(1, n_trials + 1):
     D_Shap = DataShapley(X_train, y_train, X_test, y_test)
     Iris_train = X_train.copy()
     Iris_train['target'] = y_train.values
+    Iris_train.to_csv(f'{save_dir}/Iris_{a}{b}_train_{i}', index=False)
     Iris_train['TrueDShap'] = D_Shap
     Iris_train.to_csv(f'{save_dir}/Iris_{a}{b}_{i}', index=False)
 
     Iris_test = X_test.copy()
     Iris_test['target'] = y_test.values
     Iris_test.to_csv(f'{save_dir}/Iris_{a}{b}_test_{i}', index=False)
+
+    phi = Per_DShap(X_train, y_train, X_test, y_test, n_permutations=5000,
+                    model_builder=lambda: LogisticRegression(max_iter=100, n_jobs=1),
+                    random_state=0, progress=True)
+    Iris_per = X_train.copy()
+    Iris_per['target'] = y_train.values
+    Iris_per['PerDShap'] = phi
+    Iris_per.to_csv(f'{save_dir}/Iris_{a}{b}_per_{i}', index=False)
 
     shapley_model = DShap(X_train.values, y_train.values,
                           X_test.values, y_test.values,
@@ -553,9 +615,10 @@ for i in range(1, n_trials + 1):
 #             a=0.03, b=0.5, ylim=(50, 105), order='descending', random_iters=10, save_path=path)
 #
 
-n_trials = 50
-m = 10
-save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V6/Group29'
+n_trials = 2
+m = 1000
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/BC'
+
 directory = './temp'
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(directory, exist_ok=True)
@@ -586,15 +649,23 @@ for i in range(1, n_trials + 1):
     X_train = pd.DataFrame(X_train, columns=[f'PC{i+1}' for i in range(X_train.shape[1])])
     X_test = pd.DataFrame(X_test, columns=[f'PC{i+1}' for i in range(X_test.shape[1])])
 
-    D_shap = DataShapley(X_train, y_train, X_test, y_test)
+    # D_shap = DataShapley(X_train, y_train, X_test, y_test)
 
     out_tr = pd.DataFrame(X_train, columns=[f'PC{i+1}' for i in range(X_train.shape[1])])
     out_tr['target'] = y_train.values
-    out_tr['TrueDShap'] = D_shap
-    out_tr.to_csv(f'{save_dir}/bc_{i}', index=False)
+    # out_tr['TrueDShap'] = D_shap
+    # out_tr.to_csv(f'{save_dir}/bc_{i}', index=False)
     out_te = pd.DataFrame(X_test, columns=[f'PC{i+1}' for i in range(X_test.shape[1])])
     out_te['target'] = y_test.values
     out_te.to_csv(f'{save_dir}/bc_test_{i}', index=False)
+
+    phi = Per_DShap(X_train, y_train, X_test, y_test, n_permutations=5000,
+                    model_builder=lambda: LogisticRegression(max_iter=100, n_jobs=1),
+                    random_state=0, progress=True)
+    BC_per = X_train.copy()
+    BC_per['target'] = y_train.values
+    BC_per['PerDShap'] = phi
+    BC_per.to_csv(f'{save_dir}/BC_{i}', index=False)
 
     shapley_model = DShap(
         X_train.values, y_train.values, X_test.values, y_test.values, m,
@@ -609,16 +680,16 @@ for i in range(1, n_trials + 1):
 
     print(f"[Trial {i}] CSV files saved.")
 
-n_trials = 50
+n_trials = 3
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V6/Group29"
+    "Datasets/Per_TrainnTest/TrialF_BC/Test"
 )
 plot_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V6/Group29"
+    "Datasets/Per_TrainnTest/TrialF_BC/Test"
 )
 os.makedirs(plot_dir, exist_ok=True)
 for i in range(1, n_trials + 1):
@@ -630,9 +701,9 @@ for i in range(1, n_trials + 1):
     df_test  = pd.read_csv(test_f)
     df_tmc   = pd.read_csv(tmc_f)
 
-    X_train = df_train.drop(columns=["target", "TrueDShap"], errors="ignore").values
+    X_train = df_train.drop(columns=["target", "PerDShap"], errors="ignore").values
     y_train = df_train["target"].values
-    true_shap = df_train["TrueDShap"].values
+    per_shap = df_train["PerDShap"].values
     tmc_shap = df_tmc["TMC_Shap"].values
 
     X_test = df_test.drop(columns=["target"], errors="ignore").values
@@ -641,7 +712,7 @@ for i in range(1, n_trials + 1):
     out_png_high = os.path.join(plot_dir, f"Removal_bc_high_{i}.png")
     removal_percents, results = PerformancePlot_Removal(
         vals={
-            "True Data Shapley": true_shap,
+            "True Data Shapley": per_shap,
             "TMC Shapley":       tmc_shap
         },
         X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(10, 105),order="descending",
@@ -650,7 +721,7 @@ for i in range(1, n_trials + 1):
     out_png_low = os.path.join(plot_dir, f"Removal_bc_low_{i}.png")
     removal_percents, results = PerformancePlot_Removal(
         vals={
-            "True Data Shapley": true_shap,
+            "True Data Shapley": per_shap,
             "TMC Shapley":       tmc_shap
         },
         X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, a=0.03, b=0.4, ylim=(30, 105),order="ascending",
@@ -664,15 +735,15 @@ for i in range(1, n_trials + 1):
 '''
 True Data shapley values of MNIST 
 '''
-n_trials = 20
-m        = 15
-seed0    = 1
-class_a, class_b = 1, 7
+n_trials = 5
+m        = 50
+seed0    = 10131
+class_a, class_b = 0, 1
 
 save_dir = (
     "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
     "Data Valuation/DataShapley_Graph/"
-    "Datasets/TrainnTestSets_V7/MNIST_17_15pts"
+    "Datasets/Per_TrainnTest/PCA_30D/Test"
 )
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 
@@ -721,9 +792,9 @@ y_pool = pd.Series(y_pool, name='target')
 for i in range(1, n_trials+1):
     rs = seed0 + i
     idx_a = y_pool[y_pool == class_a] \
-        .sample(n=m, random_state=rs).index
+        .sample(n=m, random_state=rs+1007).index
     idx_b = y_pool[y_pool == class_b] \
-        .sample(n=m, random_state=rs).index
+        .sample(n=m, random_state=rs+1007).index
     idx = idx_a.union(idx_b)
     X_all = X_pool.loc[idx].reset_index(drop=True)
     y_all = y_pool.loc[idx].reset_index(drop=True).map({class_a: 0, class_b: 1})
@@ -732,7 +803,7 @@ for i in range(1, n_trials+1):
     scaler1 = StandardScaler()
     X_train_scaled = scaler1.fit_transform(X_train_raw)
     X_test_scaled = scaler1.transform(X_test_raw)
-    pca = PCA(n_components=5)
+    pca = PCA(n_components=30)
     X_train_pca = pca.fit_transform(X_train_scaled)
     X_test_pca = pca.transform(X_test_scaled)
     scaler2 = StandardScaler()
@@ -741,16 +812,24 @@ for i in range(1, n_trials+1):
     X_train = pd.DataFrame(X_train, columns=[f'PC{i + 1}' for i in range(X_train.shape[1])])
     X_test = pd.DataFrame(X_test, columns=[f'PC{i + 1}' for i in range(X_test.shape[1])])
 
-    D_Shap = DataShapley(X_train, y_train, X_test, y_test)
+    # D_Shap = DataShapley(X_train, y_train, X_test, y_test)
 
     df_tr = X_train.copy()
     df_tr['target']    = y_train.values
-    df_tr['TrueDShap'] = D_Shap
-    df_tr.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_{i}", index=False)
+    # df_tr['TrueDShap'] = D_Shap
+    # df_tr.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_{i}", index=False)
 
     df_te = X_test.copy()
     df_te['target'] = y_test.values
     df_te.to_csv(f"{save_dir}/MNIST_{class_a}{class_b}_test_{i}", index=False)
+
+    phi = Per_DShap(X_train, y_train, X_test, y_test, n_permutations=5000,
+                    model_builder=lambda: LogisticRegression(max_iter=100, n_jobs=1),
+                    random_state=0, progress=True)
+    MNIST_per = X_train.copy()
+    MNIST_per['target'] = y_train.values
+    MNIST_per['PerDShap'] = phi
+    MNIST_per.to_csv(f'{save_dir}/MNIST_{class_a}{class_b}_{i}', index=False)
 
     shapley_model = DShap(
         X_train.values, y_train.values, X_test.values, y_test.values,
@@ -766,16 +845,18 @@ for i in range(1, n_trials+1):
 
     print(f"[Trial {i}] CSVs for classes {class_a}/{class_b} saved.")
 
-n_trials = 20
+# n_trials = 5
 for i in range(1, n_trials+1):
     name = f"MNIST_{class_a}{class_b}_"
     df_tr = pd.read_csv(f"{save_dir}/{name}{i}")
     df_te = pd.read_csv(f"{save_dir}/{name}test_{i}")
     df_tmc= pd.read_csv(f"{save_dir}/{name}TMC_{i}")
 
-    X_tr = df_tr.drop(columns=['target','TrueDShap'])
+    # X_tr = df_tr.drop(columns=['target','TrueDShap'])
+    X_tr = df_tr.drop(columns=['target', 'PerDShap'])
     y_tr = df_tr['target']
-    true_shap = df_tr['TrueDShap'].values
+    # true_shap = df_tr['TrueDShap'].values
+    per_shap = MNIST_per['PerDShap']
     tmc_shap  = df_tmc['TMC_Shap'].values
 
     X_te = df_te.drop(columns=['target'])
@@ -784,7 +865,8 @@ for i in range(1, n_trials+1):
     # descending removal
     PerformancePlot_Removal(
         vals={
-            'True Data Shapley': true_shap,
+            # 'True Data Shapley': true_shap,
+            'Permutated Data Shapley': per_shap,
             'TMC Shapley':       tmc_shap
         },
         X_train=X_tr.values, y_train=y_tr.values,
@@ -797,7 +879,8 @@ for i in range(1, n_trials+1):
     # ascending removal
     PerformancePlot_Removal(
         vals={
-            'True Data Shapley': true_shap,
+            # 'True Data Shapley': true_shap,
+            'Permutated Data Shapley': per_shap,
             'TMC Shapley':       tmc_shap
         },
         X_train=X_tr.values, y_train=y_tr.values,

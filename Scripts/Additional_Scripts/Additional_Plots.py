@@ -387,3 +387,90 @@ removal_percentages, results = PerformancePlot_Removal(
     order = 'ascending', random_iters = 10,
     save_path = PERF_PATH
 )
+
+
+
+'20250916 Experiment: Investigating impact of changing 1 point in training set on data Shapley values'
+df_train = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/RE/Iris_12_train_1')
+df_test = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/RE/Iris_12_test_1')
+X_train = df_train.drop(columns = ['target'])
+y_train = df_train['target']
+X_test = df_test.drop(columns = ['target'])
+y_test = df_test['target']
+save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/RE'
+## Run all 3 methods' algorithm in other files
+a = 1
+b = 2
+i = 1
+D_Shap = DataShapley(X_train, y_train, X_test, y_test)
+Iris_train = X_train.copy()
+Iris_train['target'] = y_train.values
+Iris_train['TrueDShap'] = D_Shap
+Iris_train.to_csv(f'{save_dir}/Iris_{a}{b}_{i}', index=False)
+
+phi = Per_DShap(X_train, y_train, X_test, y_test, n_permutations=5000,
+                model_builder=lambda: LogisticRegression(max_iter=100, n_jobs=1),
+                random_state=0, progress=True)
+Iris_per = X_train.copy()
+Iris_per['target'] = y_train.values
+Iris_per['PerDShap'] = phi
+Iris_per.to_csv(f'{save_dir}/Iris_{a}{b}_per_{i}', index=False)
+
+num_test = 15
+model = 'logistic'
+problem = 'classification'
+metric = 'accuracy'
+directory = './temp'
+shapley_model = DShap(X_train.values, y_train.values,
+                      X_test.values, y_test.values,
+                      num_test, sources=None,
+                      sample_weight=None, model_family=model,
+                      metric=metric, overwrite=True,
+                      directory=directory, seed=250625 + i,
+                      max_iter=100, tol=1e-5)
+shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
+Iris_TMC = Iris_train.copy()
+Iris_TMC['TMC_Shap'] = shapley_model.vals_tmc
+Iris_TMC.to_csv(f'{save_dir}/Iris_{a}{b}_TMC_{i}', index=False)
+
+'Read original values'
+df_DShap0 = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/Original/Iris_12_1')
+df_PShap0 = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/Original/Iris_12_per_1')
+df_TMC0 = pd.read_csv('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/Original/Iris_12_TMC_1')
+DShap0 = df_DShap0['TrueDShap'].to_numpy()
+PShap0 = df_PShap0['PerDShap'].to_numpy()
+TMC0 = df_TMC0['TMC_Shap'].to_numpy()
+
+'Generate Linear Comparison Plots'
+methods = ['True', 'Per', 'TMC']
+for method in methods:
+    df_new = pd.read_csv(f'/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/RE/Iris_12_{method}_1')
+    if method == 'True':
+        new_vals = df_new['TrueDShap'].to_numpy()
+        orig_vals = DShap0
+    elif method == 'Per':
+        new_vals = df_new['PerDShap'].to_numpy()
+        orig_vals = PShap0
+    else:
+        new_vals = df_new['TMC_Shap'].to_numpy()
+        orig_vals = TMC0
+
+    plt.figure(figsize=(8,8))
+    plt.scatter(orig_vals, new_vals,
+                s=200, color='tab:orange', alpha=0.6, edgecolors='k',
+                linewidth=0.5, label=f'{method} after changing 1 point')
+    all_min = min(orig_vals.min(), new_vals.min())
+    all_max = max(orig_vals.max(), new_vals.max())
+    plt.plot([all_min-0.02, all_max+0.02], [all_min-0.02, all_max+0.02],
+             '--k', linewidth=1.5, label='y = x')
+
+    plt.xlabel('Original Shapley Values', fontsize=10, weight='bold')
+    plt.ylabel(f'New {method} Values', fontsize=10, weight='bold')
+    plt.title(f'Original vs New {method} Values after Changing 1 Point', fontsize=12, weight='bold')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend(fontsize=10)
+
+    out_path = f'/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250916/Trial01/RE/LinearCompare_Iris_12_{method}_1.png'
+    plt.savefig(out_path, dpi=500)
+    plt.tight_layout()
+    plt.show()
