@@ -1,4 +1,13 @@
 '''
+251023 Updated: Modifications included:
+1) Now support multi-class classification;
+2) Scaling on Data Shapley value in training process;
+3) SSE are used instead of MSE;
+4) Removed additionally injected vectors before MLP
+'''
+
+
+'''
 0. Import Packages
 '''
 import os
@@ -10,9 +19,11 @@ import pandas as pd
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
+from matplotlib.lines import Line2D
+from itertools import cycle
 from dgl.nn.pytorch.conv import GINConv
 from torch_geometric.data import Data
-from torch.optim.lr_scheduler import StepLR, LambdaLR
+from torch.optim.lr_scheduler import StepLR, LambdaLR, OneCycleLR
 from torch.nn import (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)
 from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.linear_model import LogisticRegression
@@ -66,11 +77,15 @@ def flip_pe_sign(x, method='l0'):
     sign = torch.sign(diff)
     return x * sign
 
-def SVD_Transform(A, d=10):
-    # U, S, _ = randomized_svd(A, n_components=d, random_state = 23) #change to full svd/torch svd
-    # X_svd = U * np.sqrt(S)
+svd_d = 50
+FEAT_DIM = svd_d
+def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
-    X_svd = U[:, :d] * np.sqrt(S[:d])
+    k = min(d, U.shape[1])
+    X_svd = U[:, :k] * np.sqrt(S[:k])
+    if k < d:
+        pad = np.zeros((X_svd.shape[0], d - k), dtype = X_svd.dtype)
+        X_svd = np.concatenate([X_svd, pad], axis = 1)
     X_t = torch.tensor(X_svd, dtype=torch.float)
     X_t = flip_pe_sign(X_t, method='sum')  # l0 (positive) / sum
     return X_t.numpy()
@@ -82,7 +97,7 @@ def SVD_Transform(A, d=10):
 '''
 C_List = [0.25, 0.5, 1, 2, 4]
 
-def build_graph(X_raw, y_raw, phi, total_util, c, d = 10):
+def build_graph(X_raw, y_raw, phi, total_util, c, d = svd_d):
     D = pairwise_distances(X_raw, metric='euclidean')
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
@@ -94,6 +109,7 @@ def build_graph(X_raw, y_raw, phi, total_util, c, d = 10):
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
     edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis = 1), dtype = torch.long, device=device)
+
     # Extract upper-triangle pairs
     w_feat = A[src, dst]
     w_label = A_y[src, dst]
@@ -106,11 +122,13 @@ def build_graph(X_raw, y_raw, phi, total_util, c, d = 10):
         edge_attr_feat = edge_attr_feat,
         edge_attr_label = edge_attr_label
     )
+
     # Extra attributes
     data.X_raw = torch.tensor(X_raw, dtype = torch.float, device=device)
     data.phi = torch.tensor(phi, dtype = torch.float, device=device)
     data.total_util = torch.tensor(total_util, dtype = torch.float, device=device)
     data.y = torch.tensor(y_raw, dtype = torch.long, device=device)
+    data.num_classes = int(len(np.unique(y)))
 
     return data
 
@@ -118,21 +136,21 @@ def build_graph(X_raw, y_raw, phi, total_util, c, d = 10):
 '''
 3. Data Preprocessing
 '''
-def load_and_preprocess(train_csv, test_csv, d=10):
+def load_and_preprocess(train_csv, test_csv, d = svd_d):
     df_train = pd.read_csv(train_csv)
     X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
     y_raw = df_train['target'].to_numpy().astype(int)
     phi = df_train['PerDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
     X_test = df_test.drop(columns=['target']).astype(float).to_numpy()
-    y_test = df_test['target'].to_numpy()
+    y_test = df_test['target'].to_numpy().astype(int)
 
-    lr_full = LogisticRegression(max_iter=100, random_state=23)
+    lr_full = LogisticRegression(max_iter = 100, random_state=23)
     lr_full.fit(X_raw, y_raw)
     model_acc = lr_full.score(X_test, y_test)
     total_util = model_acc
 
-    data_list = [] # length = 5
+    data_list = [] # length = 6
     for c in C_List:
         data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c)
         data_list.append(data)
@@ -162,7 +180,7 @@ class GINShap(torch.nn.Module):
                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
                             activation = ReLU())
                 )
-            self.branches.append(convs)  # length = 5
+            self.branches.append(convs)  # length = 6
 
         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
 
@@ -176,7 +194,7 @@ class GINShap(torch.nn.Module):
 
         # MLP (widen by hidden_channels * 2)
         self.out = Sequential(
-            Linear(hidden_channels + 2, hidden_channels * 2),
+            Linear(hidden_channels, hidden_channels * 2),
             ReLU(),
             Linear(hidden_channels * 2, 100),
             ReLU(),
@@ -218,7 +236,7 @@ class GINShap(torch.nn.Module):
         output_skip = output_GIN + self.skip_lin(x0)
 
         # GT
-        output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*5)
+        output_skip = output_skip.unsqueeze(0) # transform to: (1, N, hidden_channels*6)
         output_gt = self.gt(output_skip)
         output_gt = output_gt.squeeze(0)
 
@@ -226,13 +244,13 @@ class GINShap(torch.nn.Module):
         output_h = self.Z(output_gt)
 
         # total utility + (N/10) -> MLP
-        N = output_h.size(0)
-        total_util = data.total_util
-        utility_vec = total_util.expand(N, 1)
-        NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
-        output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
+        # N = output_h.size(0)
+        # total_util = data.total_util
+        # utility_vec = total_util.expand(N, 1)
+        # NU_vector = torch.full((N, 1), np.sqrt(N)/10., device = device)
+        # output_final = torch.cat([output_h, utility_vec, NU_vector], dim = 1)
 
-        return self.out(output_final)
+        return self.out(output_h)
 
 # 'Version B: With LayerNorm & 1 shared conv stack'
 # class GINShap(torch.nn.Module):
@@ -326,37 +344,163 @@ class GINShap(torch.nn.Module):
 '''
 5. Training
 '''
-def train(model, dataset_graphs, epochs=500, lr=1e-5):
+'Training with OneCycle Policy'
+def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay = 1e-7,
+          base_test_dir: str = None, holdout_bases: list = None, out_dir: str = None,
+          ckpt_every: int = 10, checkpoint_dir: str = None, use_onecycle: bool = False,
+          max_lr: float = None, onecycle_kwargs: dict = None):
     model.to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr) # adamw
+    if out_dir:
+        os.makedirs(out_dir, exist_ok = True)
+    if checkpoint_dir is None and out_dir:
+        checkpoint_dir = os.path.join(out_dir, 'checkpoints')
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok = True)
+
+    init_lr = lr
+    if use_onecycle and max_lr is not None and onecycle_kwargs and "div_factor" in onecycle_kwargs:
+        init_lr = float(max_lr)/float(onecycle_kwargs["div_factor"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr = init_lr, weight_decay = weight_decay)
+
+    scheduler = None
+    if use_onecycle:
+        if max_lr is None:
+            raise ValueError("max_lr cannot be None")
+        steps_per_epoch = max(1, len(dataset_graphs))
+        total_steps = epochs * steps_per_epoch
+
+        oc_defaults = dict(pct_start = 0.3, anneal_strategy = 'cos',
+                           cycle_momentum = True, base_momentum = 0.85, max_momentum = 0.95,
+                           div_factor = 25.0, final_div_factor = 1e4, three_phase = False)
+        if onecycle_kwargs:
+            oc_defaults.update(onecycle_kwargs)
+
+        scheduler = OneCycleLR(optimizer, max_lr = max_lr, total_steps = total_steps, **oc_defaults)
+
     loss_history = []
+    per_epoch_rows = []
+    sparse_ckpt_rows = []
+
+    def _current_lr(opt):
+        return float(opt.param_groups[0]['lr'])
 
     for ep in range(1, epochs + 1):
         model.train()
         losses = []
-
         for data_list in dataset_graphs:
-            phi_hat = model(data_list).view(-1)
-            phi_true = data_list[0].phi.to(device)
-            loss_MSE = F.mse_loss(phi_hat, phi_true, reduction='mean')
+            total_util = data_list[0].total_util.to(device)
+            phi_true = data_list[0].phi.to(device).view(-1)
+            N = phi_true.numel()
+            scale = N/total_util
+            phi_true_scaled = phi_true * scale
+            phi_hat_scaled = model(data_list).view(-1)
+            loss = torch.sum((phi_hat_scaled - phi_true_scaled) ** 2)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
 
-            loss = loss_MSE
-            losses.append(loss)
+            if scheduler is not None:
+                scheduler.step()
+
+            losses.append(loss.detach())
+
         L = torch.stack(losses).mean()
         loss_history.append(L.item())
 
-        optimizer.zero_grad()
-        L.backward()
-        optimizer.step()
-        # scheduler.step()
-
         if ep % 5 == 0:
-            # current_lr = scheduler.get_last_lr()[0]
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f'Epoch {ep:3d} | total loss {L:.16f}| LR: {current_lr:.2e}')
+            print(f'Epoch {ep:3d} | total_loss{L:.6e} | lr: {_current_lr(optimizer):.6e}')
+
+        avg_sse = None
+        if holdout_bases and base_test_dir:
+            model.eval()
+            row = {"epoch": ep}
+            with torch.no_grad():
+                catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
+                sses = []
+                for base in holdout_bases:
+                    if base not in catalog:
+                        print(f"WARNING: Not found in {base_test_dir}: {base}")
+                        continue
+                    p = catalog[base]
+                    dl = load_and_preprocess(p['train_like'], p['test'], d = model.skip_lin.in_features)
+                    pred_scaled = model(dl).view(-1)
+                    phi_t = dl[0].phi.to(device).view(-1)
+                    total_util_t = dl[0].total_util.to(device)
+                    N_t = phi_t.numel()
+                    scale_t = (N_t/total_util_t)
+                    phi_t_scaled = phi_t * scale_t
+                    m = torch.sum((pred_scaled - phi_t_scaled) ** 2).item()
+                    row[base] = m
+                    sses.append(m)
+                if sses:
+                    avg_sse = float(np.mean(sses))
+                    row['avg_sse'] = avg_sse
+                    per_epoch_rows.append(row)
+                    print(f'>>> Average SSE in test set at {ep}: {avg_sse:.10f}')
+
+        if ckpt_every and (ep % ckpt_every == 0) and checkpoint_dir:
+            path = os.path.join(checkpoint_dir, f"model_ep{ep}.pt")
+            torch.save({
+                "epoch": ep,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "loss_train_sse": L.item(),
+                "avg_test_sse": avg_sse,
+            }, path)
+            print("Checkpoint saved to:", path)
+            if avg_sse is not None:
+                sparse_ckpt_rows.append({"epoch": ep, "avg_sse": avg_sse})
+
+    if checkpoint_dir:
+        final_path = os.path.join(checkpoint_dir, f"model_ep{ep}.pt")
+        torch.save({"epochs": epochs, "model_state": model.state_dict(), "optimizer_state": optimizer.state_dict(),
+                    "loss_train_sse": L.item(), "avg_test_sse": (per_epoch_rows[-1]["avg_sse"] if per_epoch_rows else None)}
+                   , final_path)
+        print("Final model saved to:", final_path)
+
+    if out_dir:
+        xs = np.arange(len(loss_history))
+        ys = np.array(loss_history)
+        pd.DataFrame({"epoch": xs + 1, "train_sse": ys}).to_csv(os.path.join(out_dir, "Training_SSE.csv"), index = False)
+
+        if per_epoch_rows:
+            df_full = pd.DataFrame(per_epoch_rows)
+            csv_full = os.path.join(out_dir, "Holdout_SSE_Full.csv")
+            df_full.to_csv(csv_full, index = False); print("saved to:", csv_full)
+
+            df_train_full = pd.DataFrame({"epoch": xs + 1, "train_sse": ys})
+            df_tt = df_full.merge(df_train_full, on = "epoch", how = "left")
+            df_tt = df_tt[df_tt["epoch"] >= 20]
+
+            plt.figure(figsize = (6, 4))
+            plt.plot(df_tt["epoch"], df_tt["avg_sse"], label = "Test(avg SSE)", linewidth = 1.2, alpha = 0.9)
+            plt.plot(df_tt["epoch"], df_tt["train_sse"], label = "Train (avg SSE)", linewidth = 1.2, alpha = 0.9)
+            plt.xlabel("Epoch")
+            plt.ylabel("MSE")
+            plt.title('Optimisation Curve of Training & Testing Sets (MSE)')
+            plt.grid(True, ls = '--', alpha = 0.5)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, "Optimisation_Curve.png"))
+            plt.close()
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(xs, np.log(ys + 1e-12), label='Training Loss (log)', linewidth=1.2, alpha=0.9)
+            plt.xlabel('Epochs');
+            plt.ylabel('log(MSE)');
+            plt.title(f'Optimisation Curve(log)')
+            plt.legend();
+            plt.grid(True, ls='--', alpha=0.5)
+            plt.tight_layout();
+            plt.savefig(os.path.join(out_dir, 'Optimisation_Curve_log.png'));
+            plt.close()
+
+            if sparse_ckpt_rows:
+                pd.DataFrame(sparse_ckpt_rows).to_csv(os.path.join(out_dir, "Sparse_CKPT.csv"), index = False)
 
     return loss_history
+
 
 
 '''
@@ -364,9 +508,415 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5):
 '''
 def predict(model, data_list):
     model.eval()
-    d = data_list[0].to(device)
     with torch.no_grad():
-        return model(data_list).squeeze().cpu().numpy()
+        yhat_scaled = model(data_list).view(-1)
+        total_util = data_list[0].total_util.to(yhat_scaled.device)
+        N = data_list[0].x.size(0)
+        descaled = yhat_scaled * (total_util / N)
+        return descaled.cpu().numpy()
+
+
+'''
+7. Supplementary Functions
+'''
+def _ensure_dir(p: str):
+    os.makedirs(p, exist_ok=True)
+
+def discover_datasets(base_dir: str, require_tmc: bool = False):
+    TEST_RE = re.compile(r"^(.+?)_test_(\d+)(?:\.[^.]+)?$")
+    TMC_RE = re.compile(r"^(.+?)_TMC_(\d+)(?:\.[^.]+)?$")
+    TRAIN_RE = re.compile(r"^(.+?)_(\d+)(?:\.[^.]+)?$")
+
+    bucket = {}
+    for fn in os.listdir(base_dir):
+        base = fn
+        path = os.path.join(base_dir, fn)
+
+        m = TEST_RE.match(base)
+        if m:
+            key = (m.group(1), m.group(2))
+            bucket.setdefault(key, {})["test"] = path
+            continue
+
+        m = TMC_RE.match(base)
+        if m:
+            key = (m.group(1), m.group(2))
+            bucket.setdefault(key, {})["tmc"] = path
+            continue
+
+        if TEST_RE.match(base) or TMC_RE.match(base):
+            continue
+        m = TRAIN_RE.match(base)
+        if m:
+            key = (m.group(1), m.group(2))
+            bucket.setdefault(key, {})["train_like"] = path
+            continue
+
+    result = []
+    for key, paths in bucket.items():
+        tr = paths.get("train_like");
+        te = paths.get("test");
+        tm = paths.get("tmc")
+        if tr and te and (tm or not require_tmc):
+            stem, idx = key
+            base_name = f"{stem}_{idx}"
+            result.append({
+                "key": key,
+                "base_name": base_name,
+                "train_like": tr,
+                "test": te,
+                "tmc": tm
+            })
+        else:
+            stem, idx = key
+            want = []
+            if not paths.get("train_like"): want.append("train_like")
+            if not paths.get("test"):       want.append("test")
+            if require_tmc and not paths.get("tmc"): want.append("tmc")
+            print(f"WARNING: Incomplete set for {stem}_{idx}: missing {', '.join(want)}")
+    return result
+
+def print_adj_weights(model):
+    with torch.no_grad():
+        print("\n=== Learned adjacency weights per c in C_List ===")
+        print(" idx | c | alpha  beta  w_feature  w_label")
+        for i, c in enumerate(C_List):
+            a = model.alphas[i]
+            b = model.betas[i]
+            probs = F.softmax(torch.stack([a, b]), dim = 0)
+            print(f"{i:>4d} | {c:<6} | {a.item():<13.6f}  {b.item():<13.6f}  {probs[0].item():<16.6f}  {probs[1].item():<16.6f}")
+        print()
+
+COLORS = {"true": "tab:blue", "pred": "tab:purple", "tmc": "tab:orange"}
+
+from itertools import cycle
+def _class_styles(unique_labels):
+    FILLED = ['o','s','^','D','P','*','v','>','<','H']
+    it = cycle(FILLED)
+    styles = {}
+    for cls in sorted(unique_labels):
+        mk = next(it)
+        # Do NOT include facecolors here
+        styles[cls] = dict(marker=mk, linewidths=1.2)
+    return styles
+
+def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str = None):
+    _ensure_dir(out_dir)
+    graph_dir = graph_dir or out_dir
+    _ensure_dir(graph_dir)
+
+    triplets = discover_datasets(base_train_dir, require_tmc = False)
+    for item in triplets:
+        train_csv, test_csv = item["train_like"], item["test"]
+        dlist = load_and_preprocess(train_csv, test_csv, d = gnn.skip_lin.in_features)
+        preds = predict(gnn, dlist)
+
+        df_train = pd.read_csv(train_csv)
+        df_train['Pred_Shap'] = preds
+        base_name = os.path.basename(train_csv).replace('.csv','')
+        out_csv = os.path.join(out_dir, f'{base_name}_Pred.csv')
+        df_train.to_csv(out_csv, index = False)
+        print('Saved to:', out_csv)
+
+        true_vals = df_train['PerDShap'].to_numpy()
+        pred_vals = df_train['Pred_Shap'].to_numpy()
+        y_labels = (df_train['target'].to_numpy().astype(int) if 'target' in df_train.columns else np.zeros_like(true_vals))
+        mean_true, mean_pred = true_vals.mean(), pred_vals.mean()
+        N = len(true_vals)
+        idx = np.arange(N)
+        width = 0.25
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (16, 6))
+
+        # --- Bar plot ---
+        ax1.bar(idx - width, true_vals, width, label='True Shapley', color=COLORS["true"],
+                edgecolor='k', alpha=0.7)
+        ax1.bar(idx + width, pred_vals, width, label='Predicted Shapley', color=COLORS["pred"],
+                edgecolor='k', alpha=0.7)
+        ax1.plot(idx, [mean_true]*N, '--', linewidth=2, color=COLORS["true"],
+                 label=f'Mean True: {mean_true:.3f}')
+        ax1.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"],
+                 label=f'Mean Pred: {mean_pred:.3f}')
+        ax1.set_xlabel('Sample Index', fontsize=12, weight='bold')
+        ax1.set_ylabel('Shapley Value', fontsize=12, weight='bold')
+        ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
+        ax1.grid(axis='y', linestyle='--', alpha=0.4); ax1.legend(fontsize=10)
+
+        # --- Scatter: class -> marker, all points purple ---
+        lo, hi = min(true_vals.min(), pred_vals.min()), max(true_vals.max(), pred_vals.max())
+        pad = 0.02 * (hi - lo if hi > lo else 1.0)
+        ax2.set_xlim(lo - pad, hi + pad)
+        ax2.set_ylim(lo - pad, hi + pad)
+        ax2.set_aspect('equal', adjustable='box')
+
+        classes = np.unique(y_labels)
+        styles = _class_styles(classes)
+
+        # Scatter all in purple; marker shape encodes class
+        for c in classes:
+            mask = (y_labels == c)
+            st = styles[c].copy()
+            ax2.scatter(
+                true_vals[mask], pred_vals[mask],
+                **st,
+                facecolors='none',
+                edgecolors=COLORS["pred"],
+                linewidths=1.2
+            )
+
+        # Diagonal
+        ax2.plot([lo, hi], [lo, hi], '--k', linewidth=1.5)
+
+        ax2.set_xlabel('True Shapley Values (normalized)', fontsize=12, weight='bold')
+        ax2.set_ylabel('Predicted Shapley Values', fontsize=12, weight='bold')
+        ax2.set_title('True vs Predicted (Scatter)', fontsize=13, weight='bold')
+        ax2.grid(True, linestyle='--', alpha=0.4)
+
+        # Class legend (marker only)
+        class_handles = []
+        for c in classes:
+            st = styles[c]
+            if st.get('facecolors') == 'none':
+                class_handles.append(
+                    Line2D([0],[0], marker=st['marker'], linestyle='None',
+                           markerfacecolor='none', markeredgecolor='k',
+                           markersize=8, label=f'class {c}')
+                )
+            else:
+                class_handles.append(
+                    Line2D([0],[0], marker=st['marker'], linestyle='None',
+                           markerfacecolor='k', markeredgecolor='k',
+                           markersize=8, label=f'class {c}')
+                )
+        ax2.legend(handles=class_handles, title="Class (marker)", fontsize=9, loc='best')
+
+        fig.suptitle(f'Shapley Comparison: {os.path.basename(train_csv)}', fontsize=15, weight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        out_png = os.path.join(graph_dir, f'{base_name}_ShapleyCompare.png')
+        plt.savefig(out_png, dpi=300); plt.close()
+        print('Saved to:', out_png)
+
+def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str, a = 0.05, b = 0.40,
+                      ylim = (40, 105), random_iters = 10):
+    _ensure_dir(out_dir)
+
+    catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
+    for base in holdout_bases:
+        if base not in catalog:
+            print(f"WARNING: Base {base} not found in {base_test_dir}.")
+            continue
+        paths = catalog[base]
+
+        dlist = load_and_preprocess(paths["train_like"], paths["test"], d = gnn.skip_lin.in_features)
+        preds = predict(gnn, dlist)
+
+        df_tr_like = pd.read_csv(paths['train_like'])
+        df_tr_like['Pred_Shap'] = preds
+        out_pred_csv = os.path.join(out_dir, f'{base}_Pred.csv')
+        df_tr_like.to_csv(out_pred_csv, index = False)
+        print('Saved to:', out_pred_csv)
+
+        df_test = pd.read_csv(paths['test'])
+        X_train = df_tr_like.drop(columns=['target','PerDShap','Pred_Shap']).astype(float)
+        X_test  = df_test.drop(columns=['target']).astype(float)
+        y_train = df_tr_like['target'].to_numpy().astype(int)
+        y_test  = df_test['target'].to_numpy().astype(int)
+
+        if paths.get('tmc') is None:
+            print(f"WARNING: No TMC file for {base}.")
+            continue
+
+        df_tmc   = pd.read_csv(paths['tmc'])
+        TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
+        Per_DShap = df_tr_like['PerDShap'].to_numpy()
+        Pred_Shap = preds
+
+        # --- Removal Plots (unchanged) ---
+        desc_png = os.path.join(out_dir, f'{base}_Removal_High.png')
+        _ = PerformancePlot_Removal(vals = {'Permuted Data Shapley': Per_DShap, 'TMC Data Shapley': TMC_Shap, 'Predicted Shapley': Pred_Shap},
+                                    X_train=X_train.to_numpy(), y_train=y_train, X_test=X_test.to_numpy(), y_test=y_test,
+                                    a = a, b = b, ylim = ylim, order = 'descending', random_iters = random_iters, save_path=desc_png)
+        print('Saved to:', desc_png)
+
+        asc_png = os.path.join(out_dir, f'{base}_Removal_Low.png')
+        _ = PerformancePlot_Removal(vals = {'Permuted Data Shapley': Per_DShap, 'TMC Data Shapley': TMC_Shap, 'Predicted Shapley': Pred_Shap},
+                                    X_train=X_train.to_numpy(), y_train=y_train, X_test=X_test.to_numpy(), y_test=y_test,
+                                    a = a, b = b, ylim = ylim, order='ascending', random_iters=random_iters, save_path = asc_png)
+        print('Saved to', asc_png)
+
+        # --- Bar comparison (unchanged) ---
+        tmc_vals  = np.asarray(TMC_Shap)
+        per_vals  = np.asarray(Per_DShap)
+        pred_vals = np.asarray(Pred_Shap)
+        mean_tmc, mean_per, mean_pred = tmc_vals.mean(), per_vals.mean(), pred_vals.mean()
+        N = len(per_vals); idx = np.arange(N); width = 0.27
+
+        plt.figure(figsize=(11,6))
+        plt.bar(idx - width, per_vals,  width, label='Permuted Shapley', color=COLORS["true"],
+                edgecolor='k', alpha=0.7)
+        plt.bar(idx,          tmc_vals, width, label='TMC Shapley',      color=COLORS["tmc"],
+                edgecolor='k', alpha=0.7)
+        plt.bar(idx + width,  pred_vals, width, label='Predicted Shapley', color=COLORS["pred"],
+                edgecolor='k', alpha=0.7)
+        plt.plot(idx, [mean_per]*N,  '--', linewidth=2, color=COLORS["true"],
+                 label=f'Avg Permuted ({mean_per:.3f})')
+        plt.plot(idx, [mean_tmc]*N,  '--', linewidth=2, color=COLORS["tmc"],
+                 label=f'Avg TMC ({mean_tmc:.3f})')
+        plt.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"],
+                 label=f'Avg Pred ({mean_pred:.3f})')
+        plt.xlabel('Sample Index'); plt.ylabel('Shapley Value')
+        plt.title(f'Comparison of Shapley Values — {base}')
+        plt.grid(axis='y', linestyle='--', alpha=0.4); plt.legend(); plt.tight_layout()
+        bar_png = os.path.join(out_dir, f'{base}_ShapleyCompare.png')
+        plt.savefig(bar_png, dpi=500); plt.close()
+        print('saved ➜', bar_png)
+
+        # --- Linear comparison: series color + class marker ---
+        lo = min(per_vals.min(), tmc_vals.min(), pred_vals.min())
+        hi = max(per_vals.max(), tmc_vals.max(), pred_vals.max())
+
+        classes = np.unique(y_train)
+        styles = _class_styles(classes)
+
+        fig, ax = plt.subplots(figsize=(8.8, 8.8))
+
+        # Predicted (purple) and TMC (orange) with the SAME marker per class
+        for c in classes:
+            mask = (y_train == c)
+            st = styles[c].copy()
+            ax.scatter(per_vals[mask], pred_vals[mask],
+                       **st, facecolors='none', edgecolors=COLORS["pred"], linewidths=1.2)
+            ax.scatter(per_vals[mask], tmc_vals[mask],
+                       **st, facecolors='none', edgecolors=COLORS["tmc"], linewidths=1.2)
+
+        # Diagonal y = x
+        ax.plot([lo - 0.005, hi + 0.005], [lo - 0.005, hi + 0.005], '--k', linewidth=1.5)
+
+        ax.set_xlabel('Permuted Shapley Value')
+        ax.set_ylabel('Other Shapley Values')
+        ax.set_title(f'Linear Comparison — {base}')
+        ax.grid(True, linestyle='--', alpha=0.5)
+
+        # Legends
+        # 1) Series (color) legend
+        series_handles = [
+            Line2D([0],[0], marker='o', linestyle='None',
+                   markerfacecolor='none', markeredgecolor=COLORS["pred"], markersize=8, label='Predicted Shapley'),
+            Line2D([0],[0], marker='o', linestyle='None',
+                   markerfacecolor='none', markeredgecolor=COLORS["tmc"], markersize=8, label='TMC Shapley'),
+        ]
+        legend_series = ax.legend(handles=series_handles, title="Series (color)", loc='upper left', fontsize=9)
+        ax.add_artist(legend_series)
+
+        # 2) Class (marker) legend
+        class_handles = []
+        for c in classes:
+            st = styles[c]
+            if st.get('facecolors') == 'none':
+                class_handles.append(
+                    Line2D([0],[0], marker=st['marker'], linestyle='None',
+                           markerfacecolor='none', markeredgecolor='k',
+                           markersize=8, label=f'class {c}')
+                )
+            else:
+                class_handles.append(
+                    Line2D([0],[0], marker=st['marker'], linestyle='None',
+                           markerfacecolor='k', markeredgecolor='k',
+                           markersize=8, label=f'class {c}')
+                )
+        legend_classes = ax.legend(handles=class_handles, title="Class (marker)", loc='lower right', fontsize=9)
+        ax.add_artist(legend_classes)
+
+        plt.tight_layout()
+        line_png = os.path.join(out_dir, f'{base}_LinearCompare.png')
+        plt.savefig(line_png, dpi=500); plt.close()
+        print('Saved to:', line_png)
+
+def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_bases,
+                        in_channels = svd_d, hidden_channels = 256, heads = 8,
+                        epochs = 500, lr = 1e-5, weight_decay = 1e-7,
+                        ckpt_every = 10, a = 0.05, b = 0.40, ylim = (40, 105), random_iters = 10):
+    _ensure_dir(OUT_DIR)
+
+    triplets = discover_datasets(BASE_TRAIN, require_tmc = False)
+    dataset_graphs = [load_and_preprocess(it["train_like"], it["test"], d = in_channels) for it in triplets]
+
+    gnn = GINShap(in_channels = in_channels, hidden_channels = hidden_channels, heads = heads)
+    _ = train(gnn, dataset_graphs, epochs=epochs, lr=lr,
+              base_test_dir=BASE_TEST, holdout_bases=holdout_bases, out_dir=OUT_DIR,
+              ckpt_every=ckpt_every, checkpoint_dir=os.path.join(OUT_DIR, "checkpoints"),
+              use_onecycle=True, max_lr=3e-4, onecycle_kwargs = dict(pct_start = 0.3, anneal_strategy = 'cos',
+              cycle_momentum = True, base_momentum = 0.85, max_momentum = 0.95, div_factor = 25.0,
+              final_div_factor = 1e4, three_phase = False))
+    train_dir = os.path.join(OUT_DIR, "diagnostics_train_final"); _ensure_dir(train_dir)
+    diagnose_train_sets(gnn, base_train_dir=BASE_TRAIN, out_dir=train_dir, graph_dir=train_dir)
+
+    test_dir  = os.path.join(OUT_DIR, "diagnostics_test_final");  _ensure_dir(test_dir)
+    diagnose_test_sets(gnn, base_test_dir=BASE_TEST, holdout_bases=holdout_bases,
+                       out_dir=test_dir, a=a, b=b, ylim=ylim, random_iters=random_iters)
+    return gnn
+
+def load_model_from_ckpt(ckpt_path, in_channels = svd_d, hidden_channels = 256, heads = 8, strict = True):
+    model = GINShap(in_channels = in_channels, hidden_channels = hidden_channels, heads = heads)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state = ckpt.get("model_state", ckpt.get("model"))
+    model.load_state_dict(state, strict = strict)
+    model.to(device).eval()
+    print(f'loaded epoch {ckpt.get("epoch", "?")} from {ckpt_path}')
+    return model, ckpt.get('epoch', None)
+
+def diagnose_from_checkpoints(ckpt_dir, epochs, base_train_dir, base_test_dir, holdout_bases, out_root,
+                              in_channels = svd_d, hidden_channels = 256, heads = 8,
+                              a = 0.05, b = 0.4, ylim = (40, 105), random_iters = 10):
+    for ep in epochs:
+        ck = os.path.join(ckpt_dir, f'model_ep{ep}.pt')
+        if not os.path.exists(ck):
+            print(f'WARNING: checkpoint not found: {ck}')
+            continue
+        gnn_ep, loaded_ep = load_model_from_ckpt(ck, in_channels, hidden_channels, heads)
+
+        out_dir_ep_train = os.path.join(out_root, f"diagnostics_train_ep{ep}")
+        out_dir_ep_test = os.path.join(out_root, f"diagnostics_test_ep{ep}")
+        os.makedirs(out_dir_ep_train, exist_ok=True)
+        os.makedirs(out_dir_ep_test, exist_ok=True)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TRAIN ===')
+        diagnose_train_sets(gnn_ep, base_train_dir=base_train_dir,
+                            out_dir=out_dir_ep_train, graph_dir=out_dir_ep_train)
+
+        print(f'=== Diagnostics @ epoch {ep} (loaded {loaded_ep}) : TEST ===')
+        diagnose_test_sets(gnn_ep, base_test_dir=base_test_dir, holdout_bases=holdout_bases,
+                           out_dir=out_dir_ep_test, a=a, b=b, ylim=ylim, random_iters=random_iters)
+
+        try:
+            train_csv = os.path.join(out_root, "Training_SSE_full.csv")
+            test_csv = os.path.join(out_root, "Holdout_SSE_full.csv")
+            if os.path.exists(train_csv) and os.path.exists(test_csv):
+                df_tr = pd.read_csv(train_csv)
+                df_te = pd.read_csv(test_csv)
+                sel = pd.DataFrame({"epoch": epochs})
+                df_tr_sel = sel.merge(df_tr, on="epoch", how="left")
+                df_te_sel = sel.merge(df_te[["epoch", "avg_sse"]], on="epoch", how="left")
+
+                plt.figure(figsize=(6, 4))
+                plt.plot(df_te_sel["epoch"], df_te_sel["avg_sse"], label="Test (avg MSE)",
+                         linewidth=1.2, alpha=0.9)
+                plt.plot(df_tr_sel["epoch"], df_tr_sel["train_sse"], label="Train (MSE)",
+                         linewidth=1.2, alpha=0.9)
+                plt.xlabel("Epoch");
+                plt.ylabel("MSE")
+                plt.title("Train vs Test MSE — selected checkpoints")
+                plt.grid(True, ls='--', alpha=0.5);
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(os.path.join(out_root, "Train_vs_Test_MSE_selected_epochs.png"))
+                plt.close()
+        except Exception as e:
+            print("WARNING: Could not create Train_vs_Test_MSE_selected_epochs:", e)
+
+
+
 
 
 
@@ -374,454 +924,25 @@ def predict(model, data_list):
 ######################################################################################################
 #########################################  Experiments ###############################################
 
-'''
-EXP 1
-'''
+if __name__ == "__main__":
+    BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Train'
+    BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Test'
+    OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251025/Trial01'
+    HOLDOUTS   = ['Iris_1']
 
-'A. Implementation'
-# if __name__ == '__main__':
-#     BASE00 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V2'
-#     BASE01 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group01'
-#     BASE02 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group03'
-#     BASE03 = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group04'
-#     BASEBC = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/TrainnTestSets_V3/Group05'
-#     #BASE = '/tmp/pycharm_project_236/Datasets/TrainnTestSets_V2'
-#     PATH_OUT = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250703/Trial09'
-#     #PATH_OUT = '/tmp/pycharm_project_236/Outputs/250623/Trial01'
-#     # Train_list = [
-#     #     (f'{BASE01}/Iris_01_1'),(f'{BASE01}/Iris_01_2'),
-#     #     (f'{BASE01}/Iris_01_3'),(f'{BASE01}/Iris_01_4'),
-#     #     (f'{BASE01}/Iris_01_5'),(f'{BASE01}/Iris_01_6'),
-#     #     (f'{BASE01}/Iris_01_7'),(f'{BASE01}/Iris_01_8'),
-#     #     (f'{BASE01}/Iris_01_9'),(f'{BASE01}/Iris_01_10'),
-#     #     (f'{BASE01}/Iris_01_11'),(f'{BASE01}/Iris_01_12'),
-#     #     (f'{BASE01}/Iris_01_13'),(f'{BASE01}/Iris_01_14'),
-#     #     (f'{BASE01}/Iris_01_15'),(f'{BASE01}/Iris_01_16'),
-#     #     (f'{BASE01}/Iris_01_17'), (f'{BASE01}/Iris_01_18'),
-#     #     (f'{BASE01}/Iris_01_19'), (f'{BASE01}/Iris_01_20'),
-#     #     (f'{BASE01}/Iris_01_21'), (f'{BASE01}/Iris_01_22'),
-#     #     (f'{BASE01}/Iris_01_23'), (f'{BASE01}/Iris_01_24'),
-#     #     (f'{BASE01}/Iris_01_25'), (f'{BASE01}/Iris_01_26'),
-#     #     (f'{BASE01}/Iris_01_27'), (f'{BASE01}/Iris_01_28'),
-#     #     (f'{BASE01}/Iris_01_29'), (f'{BASE01}/Iris_01_30'),
-#     #     (f'{BASE02}/Iris_02_1'), (f'{BASE02}/Iris_02_2'),
-#     #     (f'{BASE02}/Iris_02_3'), (f'{BASE02}/Iris_02_4'),
-#     #     (f'{BASE02}/Iris_02_5'), (f'{BASE02}/Iris_02_6'),
-#     #     (f'{BASE02}/Iris_02_7'), (f'{BASE02}/Iris_02_8'),
-#     #     (f'{BASE02}/Iris_02_9'), (f'{BASE02}/Iris_02_10'),
-#     #     (f'{BASE02}/Iris_02_11'), (f'{BASE02}/Iris_02_12'),
-#     #     (f'{BASE02}/Iris_02_13'), (f'{BASE02}/Iris_02_14'),
-#     #     (f'{BASE02}/Iris_02_15'), (f'{BASE02}/Iris_02_16'),
-#     #     (f'{BASE02}/Iris_02_17'), (f'{BASE02}/Iris_02_18'),
-#     #     (f'{BASE02}/Iris_02_19'), (f'{BASE02}/Iris_02_20')
-#     # ]
-#     # Train_list = [
-#     #     (f'{BASE00}/Iris_01'),
-#     #     (f'{BASE00}/Iris_02'),
-#     #     (f'{BASE00}/bc_1'),
-#     #     (f'{BASE00}/bc_2'),
-#     #     (f'{BASE00}/bc_3'),
-#     #     (f'{BASE00}/MNIST_01'),
-#     #     (f'{BASE00}/MNIST_12'),
-#     #     (f'{BASE00}/MNIST_23'),
-#     #     (f'{BASE00}/MNIST_34'),
-#     #     (f'{BASE00}/MNIST_45'),
-#     #     (f'{BASE00}/MNIST_56'),
-#     #     (f'{BASE00}/MNIST_67')
-#     # ]
-#     Train_list = [
-#         (f'{BASEBC}/bc_1.csv'), (f'{BASEBC}/bc_2.csv'),
-#         (f'{BASEBC}/bc_3.csv'), (f'{BASEBC}/bc_4.csv'),
-#         (f'{BASEBC}/bc_5.csv'), (f'{BASEBC}/bc_6.csv'),
-#         (f'{BASEBC}/bc_7.csv'), (f'{BASEBC}/bc_8.csv'),
-#         (f'{BASEBC}/bc_9.csv'), (f'{BASEBC}/bc_10.csv'),
-#         (f'{BASEBC}/bc_11.csv'), (f'{BASEBC}/bc_12.csv'),
-#         (f'{BASEBC}/bc_13.csv'), (f'{BASEBC}/bc_14.csv'),
-#         (f'{BASEBC}/bc_15.csv'), (f'{BASEBC}/bc_16.csv'),
-#         (f'{BASEBC}/bc_17.csv'), (f'{BASEBC}/bc_18.csv'),
-#         (f'{BASEBC}/bc_19.csv'), (f'{BASEBC}/bc_20.csv'),
-#         (f'{BASEBC}/bc_21.csv'), (f'{BASEBC}/bc_22.csv'),
-#         (f'{BASEBC}/bc_23.csv'), (f'{BASEBC}/bc_24.csv'),
-#         (f'{BASEBC}/bc_25.csv'), (f'{BASEBC}/bc_26.csv'),
-#         (f'{BASEBC}/bc_27.csv'), (f'{BASEBC}/bc_28.csv'),
-#         (f'{BASEBC}/bc_29.csv'), (f'{BASEBC}/bc_30.csv')
-#     ]
-#
-#     # Test_list = [
-#     #     (f'{BASE01}/Iris_01_test_1'),(f'{BASE01}/Iris_01_test_2'),
-#     #     (f'{BASE01}/Iris_01_test_3'),(f'{BASE01}/Iris_01_test_4'),
-#     #     (f'{BASE01}/Iris_01_test_5'),(f'{BASE01}/Iris_01_test_6'),
-#     #     (f'{BASE01}/Iris_01_test_7'),(f'{BASE01}/Iris_01_test_8'),
-#     #     (f'{BASE01}/Iris_01_test_9'),(f'{BASE01}/Iris_01_test_10'),
-#     #     (f'{BASE01}/Iris_01_test_11'),(f'{BASE01}/Iris_01_test_12'),
-#     #     (f'{BASE01}/Iris_01_test_13'),(f'{BASE01}/Iris_01_test_14'),
-#     #     (f'{BASE01}/Iris_01_test_15'),(f'{BASE01}/Iris_01_test_16'),
-#     #     (f'{BASE01}/Iris_01_test_17'), (f'{BASE01}/Iris_01_test_18'),
-#     #     (f'{BASE01}/Iris_01_test_19'), (f'{BASE01}/Iris_01_test_20'),
-#     #     (f'{BASE01}/Iris_01_test_21'), (f'{BASE01}/Iris_01_test_22'),
-#     #     (f'{BASE01}/Iris_01_test_23'), (f'{BASE01}/Iris_01_test_24'),
-#     #     (f'{BASE01}/Iris_01_test_25'), (f'{BASE01}/Iris_01_test_26'),
-#     #     (f'{BASE01}/Iris_01_test_27'), (f'{BASE01}/Iris_01_test_28'),
-#     #     (f'{BASE01}/Iris_01_test_29'), (f'{BASE01}/Iris_01_test_30'),
-#     #     (f'{BASE02}/Iris_02_test_1'), (f'{BASE02}/Iris_02_test_2'),
-#     #     (f'{BASE02}/Iris_02_test_3'), (f'{BASE02}/Iris_02_test_4'),
-#     #     (f'{BASE02}/Iris_02_test_5'), (f'{BASE02}/Iris_02_test_6'),
-#     #     (f'{BASE02}/Iris_02_test_7'), (f'{BASE02}/Iris_02_test_8'),
-#     #     (f'{BASE02}/Iris_02_test_9'), (f'{BASE02}/Iris_02_test_10'),
-#     #     (f'{BASE02}/Iris_02_test_11'), (f'{BASE02}/Iris_02_test_12'),
-#     #     (f'{BASE02}/Iris_02_test_13'), (f'{BASE02}/Iris_02_test_14'),
-#     #     (f'{BASE02}/Iris_02_test_15'), (f'{BASE02}/Iris_02_test_16'),
-#     #     (f'{BASE02}/Iris_02_test_17'), (f'{BASE02}/Iris_02_test_18'),
-#     #     (f'{BASE02}/Iris_02_test_19'), (f'{BASE02}/Iris_02_test_20')
-#     # ]
-#
-#     # Test_list = [
-#     #     (f'{BASE00}/Iris_01_test'),
-#     #     (f'{BASE00}/Iris_02_test'),
-#     #     (f'{BASE00}/bc_1_test'),
-#     #     (f'{BASE00}/bc_2_test'),
-#     #     (f'{BASE00}/bc_3_test'),
-#     #     (f'{BASE00}/MNIST_01_test'),
-#     #     (f'{BASE00}/MNIST_12_test'),
-#     #     (f'{BASE00}/MNIST_23_test'),
-#     #     (f'{BASE00}/MNIST_34_test'),
-#     #     (f'{BASE00}/MNIST_45_test'),
-#     #     (f'{BASE00}/MNIST_56_test'),
-#     #     (f'{BASE00}/MNIST_67_test')
-#     # ]
-#
-#     Test_list = [
-#         (f'{BASEBC}/bc_1_test.csv'), (f'{BASEBC}/bc_2_test.csv'),
-#         (f'{BASEBC}/bc_3_test.csv'), (f'{BASEBC}/bc_4_test.csv'),
-#         (f'{BASEBC}/bc_5_test.csv'), (f'{BASEBC}/bc_6_test.csv'),
-#         (f'{BASEBC}/bc_7_test.csv'), (f'{BASEBC}/bc_8_test.csv'),
-#         (f'{BASEBC}/bc_9_test.csv'), (f'{BASEBC}/bc_10_test.csv'),
-#         (f'{BASEBC}/bc_11_test.csv'), (f'{BASEBC}/bc_12_test.csv'),
-#         (f'{BASEBC}/bc_13_test.csv'), (f'{BASEBC}/bc_14_test.csv'),
-#         (f'{BASEBC}/bc_15_test.csv'), (f'{BASEBC}/bc_16_test.csv'),
-#         (f'{BASEBC}/bc_17_test.csv'), (f'{BASEBC}/bc_18_test.csv'),
-#         (f'{BASEBC}/bc_19_test.csv'), (f'{BASEBC}/bc_20_test.csv'),
-#         (f'{BASEBC}/bc_21_test.csv'), (f'{BASEBC}/bc_22_test.csv'),
-#         (f'{BASEBC}/bc_23_test.csv'), (f'{BASEBC}/bc_24_test.csv'),
-#         (f'{BASEBC}/bc_25_test.csv'), (f'{BASEBC}/bc_26_test.csv'),
-#         (f'{BASEBC}/bc_27_test.csv'), (f'{BASEBC}/bc_28_test.csv'),
-#         (f'{BASEBC}/bc_29_test.csv'), (f'{BASEBC}/bc_30_test.csv')
-#     ]
-#     # holdout_train_csv = f'{BASE03}/Iris_12_2'
-#     # holdout_test_csv = f'{BASE03}/Iris_12_test_2'
-#     # holdout_train_csv = f'{BASE00}/Iris_12'
-#     # holdout_test_csv = f'{BASE00}/Iris_12_test'
-#     holdout_train_csv = f'{BASEBC}/bc_31.csv'
-#     holdout_test_csv = f'{BASEBC}/bc_31_test.csv'
-#
-#     data_list = [
-#         load_and_preprocess(train_csv, test_csv)
-#         for train_csv, test_csv in zip(Train_list, Test_list)
-#     ]
-#     data_holdout = load_and_preprocess(holdout_train_csv, holdout_test_csv)
-#
-#     # all_phi_scaled = torch.cat([d.tmc.view(-1) for d in data_list], dim = 0)
-#     # bias_init = float(all_phi_scaled.mean().item())
-#
-#     gnn = GINShap(in_channels = 10, hidden_channels = 256, heads = 32)
-#     loss_history = train(gnn, data_list, epochs = 200, lr = 1e-4, alpha = 0.5)
-#
-#     plt.figure(figsize = (6, 4))
-#     plt.plot(loss_history, label = 'Training Loss')
-#     plt.xlabel('Epochs')
-#     plt.ylabel('Loss')
-#     plt.title('Optimisation Curve')
-#     plt.legend()
-#     plt.grid(True)
-#     plt_path = os.path.join(PATH_OUT, 'Optimisation_Curve.png')
-#     plt.savefig(plt_path)
-#     print('Optimisation Curve Saved.')
-#
-#     preds = predict(gnn, data_holdout)
-#     print('prediction percentiles:', np.percentile(preds,[0,5,50,95,100]))
-#
-#     df_holdout = pd.read_csv(holdout_train_csv)
-#     df_holdout['Pred_Shap'] = preds
-#     out_csv = f'{PATH_OUT}/Iris_12_Pred.csv'
-#     df_holdout.to_csv(out_csv, index=False)
-#     print('saved ➜', out_csv)
-#
-#     # Predict and save for each training dataset
-#     for train_csv, data in zip(Train_list, data_list):
-#         preds_train = predict(gnn, data)
-#
-#         df_train = pd.read_csv(train_csv)
-#         df_train['Pred_Shap'] = preds_train
-#
-#         base_name = os.path.basename(train_csv)
-#         out_csv_train = os.path.join(PATH_OUT, f'{base_name}_Pred.csv')
-#         df_train.to_csv(out_csv_train, index=False)
-#         print('saved ➜', out_csv_train)
-def _ensure_dir(p: str):
-    os.makedirs(p, exist_ok=True)
+    # Train and Diagnosis
+    _ = train_then_diagnose(
+        BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
+        in_channels=100, hidden_channels=256, heads=8,
+        epochs=10, ckpt_every=None
+    )
 
-def find_train_test_pairs(directory):
-    test_re  = re.compile(r"^(.+?)_test_(\d+)$")
-    train_re = re.compile(r"^(.+?)_(\d+)$")
-    trains, tests = {}, {}
-    for fn in os.listdir(directory):
-        base = fn
-        m = test_re.match(base)
-        if m:
-            key = (m.group(1), m.group(2))
-            tests[key] = os.path.join(directory, fn)
-            continue
-        m = train_re.match(base)
-        if m:
-            key = (m.group(1), m.group(2))
-            trains[key] = os.path.join(directory, fn)
-
-    pairs = []
-    for key, tr in trains.items():
-        te = tests.get(key)
-        if te:
-            pairs.append((tr, te))
-        else:
-            print(f"⚠️  no test file for {tr!r}  (wanted {key[0]}_test_{key[1]})")
-    return pairs
-
-def _mk_paths(base_test_dir: str, base_name: str):
-    parts = base_name.split("_")
-    if len(parts) == 3:
-        # MNIST-style: MNIST_{ab}_{i}
-        prefix, ab, i = parts[0], parts[1], parts[2]
-        train_like_csv = os.path.join(base_test_dir, base_name)
-        test_csv       = os.path.join(base_test_dir, f"{prefix}_{ab}_test_{i}")
-        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_{ab}_TMC_{i}")
-        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
-
-    elif len(parts) == 2:
-        # Two-part style: <prefix>_{i} (e.g., bc_1)
-        prefix, i = parts[0], parts[1]
-        train_like_csv = os.path.join(base_test_dir, base_name)
-        test_csv       = os.path.join(base_test_dir, f"{prefix}_test_{i}")
-        tmc_csv        = os.path.join(base_test_dir, f"{prefix}_TMC_{i}")
-        return dict(test=test_csv, tmc=tmc_csv, train_like=train_like_csv)
-
-    else:
-        raise ValueError(f"Unexpected base_name format: {base_name}")
-
-def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str = None):
-    _ensure_dir(out_dir)
-    graph_dir = graph_dir or out_dir
-    _ensure_dir(graph_dir)
-
-    pairs = find_train_test_pairs(base_train_dir)
-    for train_csv, test_csv in pairs:
-        dlist = load_and_preprocess(train_csv, test_csv)
-        preds = predict(gnn, dlist)
-
-        df_train = pd.read_csv(train_csv)
-        df_train['Pred_Shap'] = preds
-
-        base_name = os.path.basename(train_csv).replace('.csv', '')
-        out_csv   = os.path.join(out_dir, f'{base_name}_Pred.csv')
-        df_train.to_csv(out_csv, index=False)
-        print('saved ➜', out_csv)
-
-        true_vals = df_train['PerDShap'].to_numpy()
-        pred_vals = df_train['Pred_Shap'].to_numpy()
-        mean_true, mean_pred = true_vals.mean(), pred_vals.mean()
-        N = len(true_vals); idx = np.arange(N); width = 0.25
-
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-        # bar
-        ax1.bar(idx - width, true_vals, width, label='True Shapley', color='tab:blue',  edgecolor='k', alpha=0.7)
-        ax1.bar(idx + width, pred_vals, width, label='Predicted Shapley', color='tab:green', edgecolor='k', alpha=0.7)
-        ax1.plot(idx, [mean_true]*N, '--', linewidth=2, color='tab:blue',  label=f'Mean True: {mean_true:.3f}')
-        ax1.plot(idx, [mean_pred]*N, '--', linewidth=2, color='tab:green', label=f'Mean Pred: {mean_pred:.3f}')
-        ax1.set_xlabel('Sample Index', fontsize=12, weight='bold')
-        ax1.set_ylabel('Shapley Value', fontsize=12, weight='bold')
-        ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
-        ax1.grid(axis='y', linestyle='--', alpha=0.4); ax1.legend(fontsize=10)
-
-        # linear
-        lo, hi = min(true_vals.min(), pred_vals.min()), max(true_vals.max(), pred_vals.max())
-        ax2.scatter(true_vals, pred_vals, s=80, color='tab:blue', alpha=0.6, edgecolors='k', linewidth=0.5,
-                    label='Predicted vs True')
-        ax2.plot([lo, hi], [lo, hi], '--k', linewidth=1.5, label='y = x')
-        ax2.set_xlabel('True Shapley Values (normalized)', fontsize=12, weight='bold')
-        ax2.set_ylabel('Predicted Shapley Values', fontsize=12, weight='bold')
-        ax2.set_title('True vs Predicted (Scatter)', fontsize=13, weight='bold')
-        ax2.grid(True, linestyle='--', alpha=0.4); ax2.legend(fontsize=10)
-
-        fig.suptitle(f'Shapley Comparison: {os.path.basename(train_csv)}', fontsize=15, weight='bold')
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-        out_png = os.path.join(graph_dir, f'{base_name}_ShapleyCompare.png')
-        plt.savefig(out_png, dpi=300); plt.close()
-        print('saved ➜', out_png)
-
-def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str,
-                       a=0.05, b=0.40, ylim=(40,105), random_iters=10):
-    _ensure_dir(out_dir)
-
-    for base_name in holdout_bases:
-        paths = _mk_paths(base_test_dir, base_name)
-
-        dlist = load_and_preprocess(paths['train_like'], paths['test'])
-        preds = predict(gnn, dlist)
-
-        df_tr_like = pd.read_csv(paths['train_like'])
-        df_tr_like['Pred_Shap'] = preds
-        out_pred_csv = os.path.join(out_dir, f'{base_name}_Pred.csv')
-        df_tr_like.to_csv(out_pred_csv, index=False)
-        print('saved ➜', out_pred_csv)
-
-        df_test = pd.read_csv(paths['test'])
-
-        X_train = df_tr_like.drop(columns=['target','PerDShap','Pred_Shap']).astype(float)
-        X_test  = df_test.drop(columns=['target']).astype(float)
-        X_test  = X_test.reindex(columns=X_train.columns, fill_value=0.0)
-
-        y_train = df_tr_like['target'].to_numpy()
-        y_test  = df_test['target'].to_numpy()
-
-        df_tmc   = pd.read_csv(paths['tmc'])
-        TMC_Shap = df_tmc['TMC_Shap'].to_numpy()
-        Per_DShap = df_tr_like['PerDShap'].to_numpy()
-        Pred_Shap = preds
-
-        # Removal Plots
-        desc_png = os.path.join(out_dir, f'{base_name}_Removal_Desc.png')
-        _ = PerformancePlot_Removal(
-            vals={'Permuted Data Shapley': Per_DShap,
-                  'TMC Data Shapley': TMC_Shap,
-                  'Predicted Shapley': Pred_Shap},
-            X_train=X_train.to_numpy(), y_train=y_train,
-            X_test=X_test.to_numpy(),   y_test=y_test,
-            a=a, b=b, ylim=ylim,
-            order='descending', random_iters=random_iters,
-            save_path=desc_png
-        )
-        print('saved ➜', desc_png)
-
-        asc_png = os.path.join(out_dir, f'{base_name}_Removal_Asc.png')
-        _ = PerformancePlot_Removal(
-            vals={'Permuted Data Shapley': Per_DShap,
-                  'TMC Data Shapley': TMC_Shap,
-                  'Predicted Shapley': Pred_Shap},
-            X_train=X_train.to_numpy(), y_train=y_train,
-            X_test=X_test.to_numpy(),   y_test=y_test,
-            a=a, b=b, ylim=ylim,
-            order='ascending', random_iters=random_iters,
-            save_path=asc_png
-        )
-        print('saved ➜', asc_png)
-
-        # Magnitude Comparison and Linear Comparison
-        tmc_vals  = np.asarray(TMC_Shap)
-        per_vals  = np.asarray(Per_DShap)
-        pred_vals = np.asarray(Pred_Shap)
-        mean_tmc, mean_per, mean_pred = tmc_vals.mean(), per_vals.mean(), pred_vals.mean()
-        N = len(per_vals); idx = np.arange(N); width = 0.25
-
-        plt.figure(figsize=(10,6))
-        plt.bar(idx, tmc_vals,  width, label='TMC Shapley',      edgecolor='k', alpha=0.7)
-        plt.bar(idx, per_vals,  width, label='Permuted Shapley', edgecolor='k', alpha=0.7)
-        plt.bar(idx+width, pred_vals, width, label='Predicted Shapley', edgecolor='k', alpha=0.7)
-        plt.plot(idx, [mean_tmc]*N,  '--', linewidth=2, label=f'Avg TMC ({mean_tmc:.3f})')
-        plt.plot(idx, [mean_per]*N,  '--', linewidth=2, label=f'Avg Permuted ({mean_per:.3f})')
-        plt.plot(idx, [mean_pred]*N, '--', linewidth=2, label=f'Avg Pred ({mean_pred:.3f})')
-        plt.xlabel('Sample Index'); plt.ylabel('Shapley Value')
-        plt.title(f'Comparison of Shapley Values — {base_name}')
-        plt.grid(axis='y', linestyle='--', alpha=0.4); plt.legend(); plt.tight_layout()
-        bar_png = os.path.join(out_dir, f'{base_name}_ShapleyCompare.png')
-        plt.savefig(bar_png, dpi=500); plt.close()
-        print('saved ➜', bar_png)
-
-        lo = min(per_vals.min(), tmc_vals.mean(), pred_vals.min())
-        hi = max(per_vals.max(), tmc_vals.mean(), pred_vals.max())
-        plt.figure(figsize=(8,8))
-        plt.scatter(per_vals, tmc_vals,  s=120, alpha=0.6, edgecolors='k', linewidth=0.5, label='TMC vs Permuted')
-        plt.scatter(per_vals, pred_vals, s=120, alpha=0.6, edgecolors='k', linewidth=0.5, label='Pred vs Permuted')
-        plt.plot([lo-0.005, hi+0.005], [lo-0.005, hi+0.005], '--k', linewidth=1.5, label='y = x')
-        plt.xlabel('Permuted Shapley Value'); plt.ylabel('Other Shapley Values')
-        plt.title(f'Linear Comparison — {base_name}')
-        plt.grid(True, linestyle='--', alpha=0.5); plt.legend(); plt.tight_layout()
-        line_png = os.path.join(out_dir, f'{base_name}_LinearCompare.png')
-        plt.savefig(line_png, dpi=500); plt.close()
-        print('saved ➜', line_png)
-
-
-def train_then_diagnose(BASE_TRAIN: str,
-                        BASE_TEST: str,
-                        OUT_DIR: str,
-                        holdout_bases,
-                        in_channels=10, hidden_channels=128, heads=4,
-                        epochs=3000, lr=1e-5,
-                        a=0.05, b=0.40, ylim=(40,105), random_iters=10):
-
-    _ensure_dir(OUT_DIR)
-
-    pairs = find_train_test_pairs(BASE_TRAIN)
-    dataset_graphs = [load_and_preprocess(tr, te) for tr, te in pairs]
-
-    gnn = GINShap(in_channels=in_channels, hidden_channels=hidden_channels, heads=heads)
-    loss_history = train(gnn, dataset_graphs, epochs=epochs, lr=lr)
-
-    plt.figure(figsize=(6,4))
-    plt.plot(np.log(loss_history), label='Training Loss')
-    plt.xlabel('Epochs'); plt.ylabel('log(Loss)')
-    plt.title('Optimisation Curve(Log)'); plt.legend(); plt.grid(True)
-    plt.savefig(os.path.join(OUT_DIR, 'Optimisation_Curve.png')); plt.close()
-
-    diagnose_train_sets(gnn, base_train_dir=BASE_TRAIN, out_dir=OUT_DIR, graph_dir=OUT_DIR)
-    diagnose_test_sets(gnn, base_test_dir=BASE_TEST, holdout_bases=holdout_bases, out_dir=OUT_DIR,
-                       a=a, b=b, ylim=ylim, random_iters=random_iters)
-
-    return gnn
-
-# BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Train'
-# BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialB_MNIST/Test'
-# OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/250915/Trial02'
-# HOLDOUTS   = ['MNIST_17_1', 'MNIST_17_2', 'MNIST_17_3']
-#
-# gnn = train_then_diagnose(
-#     BASE_TRAIN=BASE_TRAIN,
-#     BASE_TEST=BASE_TEST,
-#     OUT_DIR=OUT_DIR,
-#     holdout_bases=HOLDOUTS,
-#     in_channels=10, hidden_channels=128, heads=4,
-#     epochs=1500, lr=1e-6,
-#     a=0.05, b=0.40, ylim=(40,105), random_iters=10
-# )
-
-PARAMS = dict(
-    BASE_TRAIN = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialF_BC/Train',
-    BASE_TEST  = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/Per_TrainnTest/TrialF_BC/Test',
-    OUT_DIR    = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs/251005/Trial03',
-    holdout_bases = ['bc_1', 'bc_2', 'bc_3'],
-
-    # Pre-Processing
-    d=10,
-    C_List=(0.25, 0.5, 1, 2, 4),
-
-    # model
-    in_channels = 10,
-    hidden_channels = 128,
-    heads = 4,
-    epochs = 1500,
-    lr = 5e-5,
-
-    # diagnostic plots
-    a = 0.05,
-    b = 0.40,
-    ylim = (40, 105),
-    random_iters = 10,
-)
-C_List = list(PARAMS["C_List"])
-
-model_param = [
-    "BASE_TRAIN","BASE_TEST","OUT_DIR","holdout_bases",
-    "in_channels","hidden_channels","heads","epochs","lr",
-    "a","b","ylim","random_iters"
-]
-param_setting = {k: PARAMS[k] for k in model_param}
-gnn = train_then_diagnose(**param_setting)
+    # # Manually output diagnosis from checkpoints
+    # CKPT_DIR = os.path.join(OUT_DIR, "checkpoints")
+    # my_epochs = [70]
+    # diagnose_from_checkpoints(
+    #     ckpt_dir=CKPT_DIR, epochs=my_epochs,
+    #     base_train_dir=BASE_TRAIN, base_test_dir=BASE_TEST,
+    #     holdout_bases=HOLDOUTS, out_root=OUT_DIR,
+    #     in_channels=10, hidden_channels=128, heads=4
+    # )

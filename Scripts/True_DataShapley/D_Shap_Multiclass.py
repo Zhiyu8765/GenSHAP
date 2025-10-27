@@ -321,7 +321,7 @@ for i in range(1, n_trials + 1):
     print(f"[Trial {i}] Plot saved.")
 
 ' 3) MNIST '
-n_trials     = 3
+n_trials     = 4
 seed0        = 10231
 classes_pool = list(range(10))
 k_min, k_max = 2, 3
@@ -407,7 +407,7 @@ for i in range(1, n_trials + 1):
 
     df_te = X_test.copy()
     df_te['target'] = y_test.values
-    df_te.to_csv(f"{save_dir}/MNIST_{class_tag}_test_{3+i}", index=False)
+    df_te.to_csv(f"{save_dir}/MNIST_{class_tag}_test_{10+i}", index=False)
 
     phi = Per_DShap(X_train, y_train, X_test, y_test, n_permutations=5000,
         model_builder=lambda: LogisticRegression(max_iter=200, multi_class='auto'),
@@ -415,7 +415,7 @@ for i in range(1, n_trials + 1):
     df_tr = X_train.copy()
     df_tr['target']   = y_train.values
     df_tr['PerDShap'] = phi
-    df_tr.to_csv(f"{save_dir}/MNIST_{class_tag}_{3+i}", index=False)
+    df_tr.to_csv(f"{save_dir}/MNIST_{class_tag}_{10+i}", index=False)
 
     shapley_model = DShap(
         X_train.values, y_train.values, X_test.values, y_test.values,
@@ -427,7 +427,7 @@ for i in range(1, n_trials + 1):
 
     df_tmc = df_tr.drop(columns=['PerDShap']).copy()
     df_tmc['TMC_Shap'] = shapley_model.vals_tmc
-    df_tmc.to_csv(f"{save_dir}/MNIST_{class_tag}_TMC_{3+i}", index=False)
+    df_tmc.to_csv(f"{save_dir}/MNIST_{class_tag}_TMC_{10+i}", index=False)
 
     print(f"[Trial {i}] K={K}, classes={selected_classes}, m={m}, tag={class_tag}. CSVs saved.")
 
