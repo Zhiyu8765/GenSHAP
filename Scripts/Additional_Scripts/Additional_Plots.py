@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.utils.extmath import randomized_svd
 import numpy as np
 
-from Scripts.Model.GNN_DShap import PERF_PATH
+from Scripts.Discarded.GNN_DShap import PERF_PATH
 
 # File paths
 files = [
@@ -73,10 +73,6 @@ print(f"Added empty 'TrueDShap' column and saved back to {FILE_PATH}")
 
 '20250820 Experiment: Investigating convergence of TMC Shapley'
 ### Import packages
-import os
-import re
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 ' For Calculation of TMC Data Shapley Values'
@@ -98,12 +94,6 @@ import numpy as np
 import pandas as pd
 from DShap import DShap
 from shap_utils import *
-from sklearn.utils import shuffle
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.model_selection import train_test_split
 
 #%matplotlib inline
 MEM_DIR = '../'
@@ -200,10 +190,6 @@ plt.show()
 
 '20250831 Experiment: Investigating convergence of Permutation-Based Data Shapley'
 ### Import packages
-import os
-import re
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 ' For Calculation of Permutation Based Data Shapley Values'
@@ -223,12 +209,7 @@ sys.path.append(os.getcwd())
 #importlib.reload(shap_utils)
 import numpy as np
 import pandas as pd
-from sklearn.utils import shuffle
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.datasets import load_iris, load_breast_cancer
-from sklearn.model_selection import train_test_split
 
 #%matplotlib inline
 MEM_DIR = '../'
@@ -474,3 +455,306 @@ for method in methods:
     plt.savefig(out_path, dpi=500)
     plt.tight_layout()
     plt.show()
+
+
+
+# pyDVL ≥ 0.10.0 multi-method valuation on your MNIST CSVs
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+
+# ---------- pyDVL imports (with stable module paths) ----------
+from pydvl.valuation import (
+    Dataset, SupervisedScorer, ModelUtility,
+    ShapleyValuation, BetaShapleyValuation, DeltaShapleyValuation,
+    GroupTestingShapleyValuation
+)
+
+# Class-wise Shapley pieces
+from pydvl.valuation.scorers.classwise import ClasswiseSupervisedScorer
+from pydvl.valuation.utility.classwise import ClasswiseModelUtility
+from pydvl.valuation.samplers.classwise import ClasswiseSampler
+
+# Samplers
+from pydvl.valuation.samplers import PermutationSampler, OwenSampler, GridOwenStrategy
+from pydvl.valuation.samplers.powerset import UniformSampler, NoIndexIteration
+from pydvl.valuation.samplers.truncation import RelativeTruncation
+
+# Stopping criteria
+from pydvl.valuation.stopping import (
+    RankCorrelation, MinUpdates, MaxSamples, History, NoStopping
+)
+
+# KNN Shapley (exact)
+from pydvl.valuation.methods.knn_shapley import KNNShapleyValuation
+
+# ---------- Paths & columns ----------
+TRAIN_CSV = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251031/Trial01/MNIST_369xx_20.csv"
+TEST_CSV  = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251031/Trial01/MNIST_369xx_test_20.csv"
+OUT_DIR   = os.path.dirname(TRAIN_CSV)
+LABEL_COL = "target"
+PRED_CSV  = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251031/Trial01/MNIST_369xx_20_Pred.csv"
+TMC_CSV   = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251031/Trial01/MNIST_369xx_TMC_20.csv"
+df_train = pd.read_csv(TRAIN_CSV)
+df_test  = pd.read_csv(TEST_CSV)
+
+assert LABEL_COL in df_train.columns and LABEL_COL in df_test.columns, "Label column not found."
+
+drop_cols = [LABEL_COL, "PerDShap"]
+drop_cols = [c for c in drop_cols if c in df_train.columns]
+
+X_train = df_train.drop(columns=drop_cols).to_numpy()
+y_train = df_train[LABEL_COL].to_numpy()
+
+X_test  = df_test.drop(columns=[LABEL_COL]).to_numpy()
+y_test  = df_test[LABEL_COL].to_numpy()
+
+# --- Create pyDVL Datasets (constructor, not from_arrays) ---
+train_ds = Dataset(X_train, y_train)
+test_ds  = Dataset(X_test,  y_test)
+
+# ---------- Base models ----------
+# (A) Logistic regression for model-based methods
+lr = LogisticRegression(max_iter=200)
+scorer = SupervisedScorer("accuracy", test_ds, default=0.0, range=(0.0, 1.0))
+utility = ModelUtility(lr, scorer)
+
+# (B) KNN for KNN-Shapley
+knn = KNeighborsClassifier(n_neighbors=3)
+
+# ---------- Common stoppers ----------
+# Reasonable small-ish budgets; tune up if you want higher precision.
+shapley_stopping   = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
+beta_stopping      = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
+delta_stopping     = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
+group_stopping     = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
+
+# ---------- 1) Standard Shapley (permutation) ----------
+perm_sampler = PermutationSampler(truncation=RelativeTruncation(rtol=0.01, burn_in_fraction=0.3), seed=42)
+val_shapley  = ShapleyValuation(utility, perm_sampler, shapley_stopping, progress=True)
+val_shapley.fit(train_ds)
+res_shapley = val_shapley.result.values
+
+# ---------- 2) Beta Shapley ----------
+val_beta = BetaShapleyValuation(utility, perm_sampler, beta_stopping, alpha=1, beta=16, progress=True)
+val_beta.fit(train_ds)
+res_beta = val_beta.result.values
+
+# # ---------- 4) Group Testing Shapley ----------
+# import inspect
+# from pydvl.valuation.methods.gt_shapley import GroupTestingShapleyValuation
+# from pydvl.valuation.samplers import PermutationSampler
+#
+# perm_sampler = PermutationSampler()  # or keep your configured one
+# N_SAMPLES    = 2000
+# BATCH        = 64
+#
+# import inspect
+# from pydvl.valuation.methods.gt_shapley import GroupTestingShapleyValuation
+#
+# def make_group_testing_vrobust(utility, sampler, is_done,
+#                                n_samples=2000, batch_size=64,
+#                                epsilon=1e-3, progress=True):
+#     """
+#     Build GroupTestingShapleyValuation across pyDVL variants:
+#     - pass only kwargs present in the __init__ signature
+#     - ensure epsilon (tolerance) is provided when required
+#     - avoid positional args to prevent mis-binding
+#     - attach sampler afterward if ctor doesn't accept it
+#     """
+#     sig = inspect.signature(GroupTestingShapleyValuation)
+#     allowed = set(sig.parameters.keys())
+#
+#     kwargs = {}
+#     if "utility"        in allowed: kwargs["utility"]        = utility
+#     if "sampler"        in allowed: kwargs["sampler"]        = sampler
+#     if "is_done"        in allowed: kwargs["is_done"]        = is_done
+#     if "n_samples"      in allowed: kwargs["n_samples"]      = int(n_samples)
+#     if "batch_size"     in allowed: kwargs["batch_size"]     = int(batch_size)
+#     if "epsilon"        in allowed: kwargs["epsilon"]        = float(epsilon)
+#     if "tol"            in allowed and "epsilon" not in allowed:
+#         kwargs["tol"] = float(epsilon)                       # some variants use 'tol'
+#     if "progress"       in allowed: kwargs["progress"]       = bool(progress)
+#     if "solver_options" in allowed: kwargs["solver_options"] = {}  # ensure dict
+#
+#     val = GroupTestingShapleyValuation(**kwargs)
+#
+#     # if ctor didn't take 'sampler', attach it when possible
+#     if getattr(val, "sampler", None) is None:
+#         try: val.sampler = sampler
+#         except Exception: pass
+#     return val
+#
+# # ---- build & run ----
+# val_group = make_group_testing_vrobust(
+#     utility=utility,
+#     sampler=perm_sampler,
+#     is_done=group_stopping,
+#     n_samples=N_SAMPLES,
+#     batch_size=BATCH,
+#     progress=True,
+# )
+# val_group.fit(train_ds)
+# res_group = val_group.result.values
+# print("Group-Testing Shapley OK:", res_group.shape)
+
+# # ---------- 5) Owen-Shapley (antithetic Owen or grid Owen are both valid) ----------
+# owen_sampler = OwenSampler(outer_sampling_strategy=GridOwenStrategy(n_samples_outer=200))
+# owen_stop    = RankCorrelation(rtol=1e-3, burn_in=100)
+# val_owen     = ShapleyValuation(utility, owen_sampler, owen_stop, progress=True)
+# val_owen.fit(train_ds)
+# res_owen = val_owen.result.values
+#
+# # ---------- 6) Class-wise Shapley ----------
+# # per docs: in-class = permutations (finite), out-of-class = powerset with NoIndexIteration
+# cws_scorer  = ClasswiseSupervisedScorer("accuracy", test_ds)  # defaults follow paper (f(x)=x, g(x)=exp(x))
+# cws_utility = ClasswiseModelUtility(lr, cws_scorer)
+# cws_sampler = ClasswiseSampler(
+#     in_class=PermutationSampler(truncation=RelativeTruncation(rtol=0.01, burn_in_fraction=0.3), seed=42),
+#     out_of_class=UniformSampler(index_iteration=NoIndexIteration),
+#     max_in_class_samples=1,
+# )
+# # 500 permutations per label as in the paper; feel free to bump this
+# n_labels  = len(np.unique(y_train))
+# cws_stop  = MaxSamples(cws_sampler, 500 * n_labels) | History(n_steps=5000)
+# val_cws   = None
+# try:
+#     # New import path (already used above) ensures no ModuleNotFoundError
+#     from pydvl.valuation.methods.classwise_shapley import ClasswiseShapleyValuation
+#     val_cws = ClasswiseShapleyValuation(cws_utility, cws_sampler, cws_stop, normalize_values=True, progress=True)
+#     val_cws.fit(train_ds)
+#     res_cws = val_cws.result.values
+# except Exception as e:
+#     warnings.warn(f"Class-wise Shapley failed to run: {e}")
+#     res_cws = np.full(len(train_ds), np.nan)
+
+# ---------- 7) KNN-Shapley (exact, O(n log n) per test point) ----------
+val_knn = KNNShapleyValuation(knn, test_ds, progress=True)
+val_knn.fit(train_ds)
+res_knn = val_knn.result.values
+
+# ---------- Collect & save ----------
+out = pd.DataFrame({
+    "Index": df_train.index,
+    LABEL_COL: df_train[LABEL_COL],
+    # "pyDVL_Shapley": res_shapley,
+    "pyDVL_BetaShapley": res_beta,
+    # "pyDVL_DeltaShapley": res_delta,
+    # "pyDVL_GroupTesting": res_group,
+    # "pyDVL_OwenShapley": res_owen,
+    # "pyDVL_Classwise": res_cws,
+    "pyDVL_KNNShapley": res_knn,
+})
+
+# Join your existing columns if present
+def _safe_merge(base: pd.DataFrame, path: str, suffix: str) -> pd.DataFrame:
+    if os.path.exists(path):
+        extra = pd.read_csv(path)
+        # Try common join keys: 'Index' then fall back to positional if needed
+        if "Index" in extra.columns:
+            return base.merge(extra, on="Index", how="left", suffixes=("", suffix))
+        else:
+            extra = extra.copy()
+            extra["Index"] = extra.index
+            return base.merge(extra, on="Index", how="left", suffixes=("", suffix))
+    return base
+
+out = _safe_merge(out, PRED_CSV,  "_pred")
+out = _safe_merge(out, TMC_CSV,   "_tmc")
+
+OUT_CSV = os.path.join(OUT_DIR, "MNIST_369xx_20_pyDVL_AllValues.csv")
+out.to_csv(OUT_CSV, index=False)
+print("Saved:", OUT_CSV)
+
+
+# --- Linear comparison: Pred/TMC/Beta/KNN vs Permuted (PerDShap) ---
+# === Linear comparison: Pred/TMC/Beta/KNN vs PerDShap ===
+import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+df = pd.read_csv(OUT_CSV)
+
+# Columns we will use (PerDShap + Pred_Shap are guaranteed by you)
+PERM_COL = "PerDShap"
+PRED_COL = "Pred_Shap"
+BETA_COL = "pyDVL_BetaShapley"
+KNN_COL  = "pyDVL_KNNShapley"
+
+# TMC column: try common names then fall back to first col containing 'tmc' and 'shap'
+if "TMC_Shap" in df.columns:
+    TMC_COL = "TMC_Shap"
+elif "TMC_Shapley" in df.columns:
+    TMC_COL = "TMC_Shapley"
+else:
+    tmc_guess = [c for c in df.columns if ("tmc" in c.lower() and "shap" in c.lower())]
+    if not tmc_guess:
+        raise ValueError("Couldn't find a TMC column; please add one named 'TMC_Shap' (or similar).")
+    TMC_COL = tmc_guess[0]
+
+# Label column
+if LABEL_COL not in df.columns:
+    raise ValueError(f"Label column '{LABEL_COL}' not found in OUT_CSV.")
+y_vals = df[LABEL_COL].to_numpy()
+
+# Values
+per_vals  = df[PERM_COL].to_numpy()
+pred_vals = df[PRED_COL].to_numpy()
+tmc_vals  = df[TMC_COL].to_numpy()
+beta_vals = df[BETA_COL].to_numpy()
+knn_vals  = df[KNN_COL].to_numpy()
+
+# Axis limits
+lo = np.nanmin([per_vals.min(), pred_vals.min(), tmc_vals.min(), beta_vals.min(), knn_vals.min()])
+hi = np.nanmax([per_vals.max(), pred_vals.max(), tmc_vals.max(), beta_vals.max(), knn_vals.max()])
+pad = 0.001 * (hi - lo + 1e-12)
+
+# Styles
+COLORS  = {"pred":"#1f77b4","tmc":"#ff7f0e","beta":"#2ca02c","knn":"#d62728"}
+MARKERS = ['o','s','^','D','P','X','v','<','>','*']
+classes = np.unique(y_vals)
+styles  = {c: dict(marker=MARKERS[i % len(MARKERS)], s=20, linewidths=1.2) for i, c in enumerate(classes)}
+
+# Plot
+fig, ax = plt.subplots(figsize=(8.8, 8.8))
+for c in classes:
+    m  = (y_vals == c)
+    st = styles[c].copy()
+    ax.scatter(per_vals[m], pred_vals[m], **st, facecolors='none', edgecolors=COLORS["pred"])
+    ax.scatter(per_vals[m], tmc_vals[m],  **st, facecolors='none', edgecolors=COLORS["tmc"])
+    ax.scatter(per_vals[m], beta_vals[m], **st, facecolors='none', edgecolors=COLORS["beta"])
+    ax.scatter(per_vals[m], knn_vals[m],  **st, facecolors='none', edgecolors=COLORS["knn"])
+
+ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], '--k', linewidth=1.5)
+ax.set_xlabel(f'Permuted Shapley Value ({PERM_COL})')
+ax.set_ylabel('Other Shapley Values')
+ax.set_title('Linear Comparison — MNIST_369xx_20')
+ax.grid(True, linestyle='--', alpha=0.5)
+
+# Legends
+series_handles = [
+    Line2D([0],[0], marker='o', linestyle='None', markerfacecolor='none', markeredgecolor=COLORS["pred"], markersize=8, label='Predicted Shapley'),
+    Line2D([0],[0], marker='o', linestyle='None', markerfacecolor='none', markeredgecolor=COLORS["tmc"],  markersize=8, label='TMC Shapley'),
+    Line2D([0],[0], marker='o', linestyle='None', markerfacecolor='none', markeredgecolor=COLORS["beta"], markersize=8, label='Beta Shapley'),
+    Line2D([0],[0], marker='o', linestyle='None', markerfacecolor='none', markeredgecolor=COLORS["knn"],  markersize=8, label='KNN Shapley'),
+]
+legend_series = ax.legend(handles=series_handles, title="Series (color)", loc='upper left', fontsize=9)
+ax.add_artist(legend_series)
+
+class_handles = [
+    Line2D([0],[0], marker=styles[c]['marker'], linestyle='None',
+           markerfacecolor='none', markeredgecolor='k', markersize=8, label=f'class {int(c)}')
+    for i, c in enumerate(classes)
+]
+legend_classes = ax.legend(handles=class_handles, title="Class (marker)", loc='lower right', fontsize=9)
+ax.add_artist(legend_classes)
+
+plt.tight_layout()
+line_png = os.path.join(OUT_DIR, "MNIST_369xx_20_LinearCompare.png")
+plt.savefig(line_png, dpi=500)
+plt.close()
+print("Saved linear comparison to:", line_png)
