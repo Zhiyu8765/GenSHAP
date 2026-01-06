@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="chenzhiyu@10.26.1.180:22 password" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="GNN_DShap" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
-      <paths name="chenzhiyu@10.26.1.180:22 password">
+      <paths name="GNN_DShap">
         <serverdata>
           <mappings>
-            <mapping deploy="/tmp/pycharm_project_236" local="$PROJECT_DIR$" />
+            <mapping deploy="/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>

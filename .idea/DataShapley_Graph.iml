@@ -3,8 +3,32 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251011" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251023/Tuning" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251027/Trial02/checkpoints" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251110" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251111" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251116" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251117" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251130" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251207" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251211" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251212" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251213" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251218" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251219" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251220" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251221" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251222" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251224" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251226" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251228" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251229" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/251231" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/260101" />
+      <excludeFolder url="file://$MODULE_DIR$/Outputs_II/260105" />
     </content>
-    <orderEntry type="jdk" jdkName="ych" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="zy_env" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

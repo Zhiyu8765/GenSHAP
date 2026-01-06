@@ -1,17 +1,12 @@
 '''
-251023 Updated: Modifications included:
-1) Now support multi-class classification;
-2) Scaling on Data Shapley value;
-3) Removed additionally injected vectors before MLP
-'''
-
-'''
 0. Import Packages
 '''
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import re
 import dgl
 import torch
+import time
 import numpy as np
 import pandas as pd
 import torch.nn.functional as F
@@ -28,25 +23,28 @@ from sklearn.linear_model import LogisticRegression
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
 'Check Availability of GPU'
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-# torch.cuda.set_device(0)
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.cuda.set_device(0)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("Current device:", torch.cuda.current_device())
+    print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+
+'On CPU'
+# device = torch.device("cpu")
 # print("CUDA available:", torch.cuda.is_available())
-# if torch.cuda.is_available():
-#     print("Current device:", torch.cuda.current_device())
-#     print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
-
-os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-USE_CUDA = torch.cuda.is_available()
-device = torch.device("cuda" if USE_CUDA else "cpu")
-
-print("CUDA available:", USE_CUDA)
-if USE_CUDA:
-    try:
-        print("Current device:", torch.cuda.current_device())
-        print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
-    except Exception as e:
-        print("CUDA info not available:", e)
+# print("Using device:", device)
+# os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+# USE_CUDA = torch.cuda.is_available()
+# device = torch.device("cuda" if USE_CUDA else "cpu")
+#
+# print("CUDA available:", USE_CUDA)
+# if USE_CUDA:
+#     try:
+#         print("Current device:", torch.cuda.current_device())
+#         print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+#     except Exception as e:
+#         print("CUDA info not available:", e)
 
 '''
 1. SVD
@@ -86,7 +84,27 @@ def flip_pe_sign(x, method='sum'):
     return x * sign
 
 svd_d = 100
-FEAT_DIM = svd_d
+# FEAT_DIM = svd_d
+## Injection of LOO
+# FEAT_DIM = svd_d + 1
+## Injection of gradient norm and error
+# FEAT_DIM = svd_d + 3
+## Injection of LOO + grad norm + grad error + Local distance-skewness
+# FEAT_DIM = svd_d + 4
+## Injection of other row statistics (mean, var, min, max, skewness, kurtosis)
+# FEAT_DIM = svd_d + 9
+## Injection of statistics on loss history
+# FEAT_DIM = svd_d + 15
+## Injection of time series loss
+# FEAT_DIM = svd_d + 109
+## Injection of loss history (per 10 epoch)
+# FEAT_DIM = svd_d + 19
+# ## Injection of KNN's total accuracy (k = 5, 10, 100)
+# FEAT_DIM = svd_d + 22
+## Injection of inclusion frequency
+FEAT_DIM = svd_d + 25
+
+
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
     k = min(d, U.shape[1])
@@ -103,49 +121,344 @@ def SVD_Transform(A, d = svd_d):
 '''
 C_List = [0.25, 0.5, 1, 2, 4, 8]
 
-def build_graph(X_raw, y_raw, phi, total_util, c, d = svd_d):
+def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z, loss_stats_z, knn_acc_z, inc_freq_z, d=svd_d):
     D = pairwise_distances(X_raw, metric='euclidean')
+    # D = pairwise_distances(X_raw, metric='manhattan')
+    ## Gaussian Kernel
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
+    ### Laplace Kernel
+    # sigma = np.mean(D)
+    # eps = 1e-12
+    # A = np.exp(-D / (c * sigma + eps))
+    ## Student t kernel
+    # sigma = np.mean(D)
+    # nu = 1.0
+    # eps = 1e-12
+    # scale2 = (c * sigma + eps) ** 2
+    # A = (1.0 + (D ** 2) / (nu * scale2)) ** (-(nu + 2.0) / 2.0)
+
+    ## Injection of Local Distance Skewness
+    def _standardize(arr):
+        mu = arr.mean()
+        std = arr.std()
+        if std < 1e-12:
+            return np.zeros_like(arr)
+        return (arr - mu) / std
+
+    def _skewness_1d(v, eps=1e-12):
+        v = np.asarray(v)
+        m = v.mean()
+        c = v - m
+        s2 = np.mean(c**2)
+        s = np.sqrt(s2 + eps)
+        return np.mean(c**3) / (s**3 + eps)
+
+    def _kurtosis_1d(v, eps=1e-12):
+        v = np.asarray(v, dtype=float)
+        m = v.mean()
+        c = v - m
+        s2 = np.mean(c ** 2)
+        s4 = (s2 + eps) ** 2
+        return np.mean(c ** 4) / s4 - 3.0
+
+    # # Injection of skewness (treat each row as random samples from one distribution)
+    # Xr = np.asarray(X_raw, dtype=float)
+    # skew_feat = np.array([_skewness_1d(Xr[i]) for i in range(Xr.shape[0])], dtype=float)  # (N,)
+    # skew_dist_z = _standardize(skew_feat)  # (N,)
+
+    # Injection of more statistics
+    Xr = np.asarray(X_raw, dtype=float)
+    row_mean = Xr.mean(axis=1)
+    row_var = Xr.var(axis=1)
+    row_min = Xr.min(axis=1)
+    row_max = Xr.max(axis=1)
+    row_skew = np.array([_skewness_1d(Xr[i]) for i in range(Xr.shape[0])])
+    row_kurt = np.array([_kurtosis_1d(Xr[i]) for i in range(Xr.shape[0])])
+
+    stats = np.vstack([row_mean, row_var, row_min, row_max, row_skew, row_kurt]).T  # (N, 6)
+    stats_z = np.column_stack([_standardize(stats[:, j]) for j in range(stats.shape[1])])
+
     X_svd = SVD_Transform(A, d = d)
     y = np.asarray(y_raw).ravel()
     A_y = (y[:, None] == y[None, :]).astype(float)
 
+    # # Injection of LOO (standardised)
+    # loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)
+    # X_node = np.concatenate([X_svd, loo_z], axis=1)  # (N, svd_d + 1)
+
+    ## Injection of LOO + Gradient Norm + Grad Error
+    loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)
+    grad_norm_z = np.asarray(grad_norm_z).reshape(-1, 1)  # (N, 1)
+    grad_err_z = np.asarray(grad_err_z).reshape(-1, 1)  # (N, 1)
+
+    ## weight on injected features
+    weight_extra = 1.0
+    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z], axis=1)  # (N, 3)
+    # extra_feats *= weight_extra
+    # X_node = np.concatenate([X_svd, extra_feats], axis=1)  # (N, svd_d + 3)
+    ## Injection of LOO + Gradient Norm + Grad Error + Local distance-skewness
+    # skew_dist_z = np.asarray(skew_dist_z).reshape(-1, 1)
+    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, skew_dist_z], axis=1)
+    # ## Injection of row statistics
+    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z], axis=1)  # (N, 19) when injecting loss history per 10 epochs; (N, 109) when using time series loss, (N, 9) when using loss statistics
+    # extra_feats *= weight_extra
+    ## Injection of KNN's whole accuracy
+    # knn_acc_z = np.asarray(knn_acc_z)
+    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z, knn_acc_z], axis = 1)
+    # extra_feats *= weight_extra
+    ## Injection of inclusion frequency
+    inc_freq_z = np.asarray(inc_freq_z)
+    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z, knn_acc_z, inc_freq_z], axis=1)
+    extra_feats *= weight_extra
+    X_node = np.concatenate([X_svd, extra_feats], axis=1)
+
+
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
-    edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis = 1),
-                              dtype = torch.long, device=device)
+    edge_index = torch.tensor(
+        np.concatenate([eidx, eidx[::-1]], axis=1),
+        dtype=torch.long, device=device
+    )
 
     w_feat = A[src, dst]
     w_label = A_y[src, dst]
-    edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype = torch.float, device=device).unsqueeze(1)
-    edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype = torch.float, device=device).unsqueeze(1)
+    edge_attr_feat = torch.tensor(
+        np.concatenate([w_feat, w_feat]),
+        dtype=torch.float, device=device
+    ).unsqueeze(1)
+    edge_attr_label = torch.tensor(
+        np.concatenate([w_label, w_label]),
+        dtype=torch.float, device=device
+    ).unsqueeze(1)
 
     data = Data(
-        x = torch.tensor(X_svd, dtype = torch.float, device=device),
-        edge_index = edge_index,
-        edge_attr_feat = edge_attr_feat,
-        edge_attr_label = edge_attr_label
+        x=torch.tensor(X_node, dtype=torch.float, device=device),  # use X_node
+        edge_index=edge_index,
+        edge_attr_feat=edge_attr_feat,
+        edge_attr_label=edge_attr_label
     )
 
     # Extra attributes
-    data.X_raw = torch.tensor(X_raw, dtype = torch.float, device=device)
-    data.phi = torch.tensor(phi, dtype = torch.float, device=device)
-    data.total_util = torch.tensor(total_util, dtype = torch.float, device=device)
-    data.y = torch.tensor(y_raw, dtype = torch.long, device=device)
+    data.X_raw = torch.tensor(X_raw, dtype=torch.float, device=device)
+    data.phi = torch.tensor(phi, dtype=torch.float, device=device)
+    data.total_util = torch.tensor(total_util, dtype=torch.float, device=device)
+    data.y = torch.tensor(y_raw, dtype=torch.long, device=device)
     data.num_classes = int(len(np.unique(y)))
 
     # Record number of classes of each dataset
     K = int(np.unique(y).size)
-    k_vec = np.array([K, 1.0/max(1, K), np.log1p(K)], dtype = float)
+    k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=float)
     data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float, device=device)
 
+    # # Keep LOO_z for diagnostics
+    # data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)
+
+    ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics
+    data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)
+    data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float, device=device)
+    data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float, device=device)
+    # data.skew_dist_z = torch.tensor(skew_dist_z, dtype=torch.float, device=device)
+    data.stats_z = torch.tensor(stats_z, dtype=torch.float, device=device)
     return data
 
 '''
 3. Data Preprocessing
 '''
+'Record loss history in training Logistic Regression (Using Pytorch)'
+def loss_history_LR(X_raw, y_raw, epochs=100, log_every=1, lr=1e-1,
+                    device="cpu", seed=23, eps=1e-12):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
+    y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
+    N, d = X.shape
+    K = int(torch.unique(y).numel())
+
+    W = torch.zeros(d, K, device=device, requires_grad=True)
+    b = torch.zeros(K, device=device, requires_grad=True)
+
+    opt = torch.optim.Adam([W, b], lr=lr)
+
+    loss_hist = []
+    for ep in range(1, epochs + 1):
+        logits = X @ W + b
+        loss = F.cross_entropy(logits, y, reduction="mean")
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+
+        if (ep % log_every == 0) or (ep == epochs):
+            with torch.no_grad():
+                logits_t = X @ W + b
+                per_sample = F.cross_entropy(logits_t, y, reduction="none")  # (N,)
+                loss_hist.append(per_sample.detach().cpu().numpy())
+
+    L = np.stack(loss_hist, axis=1)  # (N, T)
+    mu = L.mean(axis=1)
+    var = L.var(axis=1)
+    mn = L.min(axis=1)
+    mx = L.max(axis=1)
+
+    c = L - mu[:, None]
+    s2 = (c**2).mean(axis=1) + eps
+    s = np.sqrt(s2)
+    skew = (c**3).mean(axis=1) / (s**3 + eps)
+    kurt = (c**4).mean(axis=1) / (s2**2 + eps) - 3.0
+
+    stats = np.vstack([mu, var, mn, mx, skew, kurt]).T  # (N, 6)
+    return stats
+
+# 'Treating loss history as time series'
+# def loss_LR_series(X_raw, y_raw, epochs = 101, log_every = 1, lr = 1e-1, device = 'cpu',
+#                    seed = 23, eps = 1e-12):
+#     torch.manual_seed(seed)
+#     np.random.seed(seed)
+#     X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
+#     y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
+#     N, d = X.shape
+#     K = int(torch.unique(y).numel())
+#     W = torch.zeros(d, K, device=device, requires_grad=True)
+#     b = torch.zeros(K, device=device, requires_grad=True)
+#     opt = torch.optim.Adam([W, b], lr=lr)
+#
+#     loss_hist = []
+#     for ep in range(1, epochs + 1):
+#         logits = X @ W + b
+#         loss = F.cross_entropy(logits, y, reduction="mean")
+#         opt.zero_grad(set_to_none=True)
+#         loss.backward()
+#         opt.step()
+#
+#         if (ep % log_every == 0) or (ep == epochs):
+#             with torch.no_grad():
+#                 logits_t = X @ W + b
+#                 per_sample = F.cross_entropy(logits_t, y, reduction="none")  # (N,)
+#                 loss_hist.append(per_sample.detach().cpu().numpy())
+#
+#     L = np.stack(loss_hist, axis=1)  # (N, T)
+#     dL = L[:, 1:] - L[:, :-1]  # (N, T-1)
+#
+#     if dL.shape[1]<100:
+#         dL = np.pad(dL, ((0,0), (0, 100 - dL.shape[1])), mode = "constant")
+#     elif dL.shape[1]>100:
+#         dL = dL[:, :100]
+#
+#     return dL
+
+'Record and inject loss history per 10 epoch'
+def loss_LR_snapshots(X_raw, y_raw, epochs = 100, step = 10, lr = 1e-1, device = 'cpu', seed = 23):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
+    y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
+    N, d = X.shape
+    K = int(torch.unique(y).numel())
+
+    W = torch.zeros(d, K, device=device, requires_grad=True)
+    b = torch.zeros(K, device=device, requires_grad=True)
+    opt = torch.optim.Adam([W, b], lr=lr)
+
+    snaps = []
+    for ep in range(1, epochs + 1):
+        logits = X @ W + b
+        loss = F.cross_entropy(logits, y, reduction="mean")
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+
+        if (ep % step == 0) or (ep == epochs):
+            with torch.no_grad():
+                logits_t = X @ W + b
+                per_sample = F.cross_entropy(logits_t, y, reduction="none")
+                snaps.append(per_sample.detach().cpu().numpy())
+
+    return(np.stack(snaps, axis = 1))
+
+'Compute KNN accuracy'
+def knn_subset_acc(X_raw, y_raw, X_test, y_test, ks=(5, 10, 100), metric="euclidean",
+                   max_iter=100, seed=23, fallback="majority"):
+    from sklearn.neighbors import KNeighborsClassifier
+    Xr = np.asarray(X_raw, dtype=float)
+    yr = np.asarray(y_raw, dtype=int)
+    N = Xr.shape[0]
+
+    D = pairwise_distances(Xr, metric = metric)
+    feats = np.zeros((N, len(ks)), dtype=float)
+
+    nn_sorted = np.argsort(D, axis=1)
+
+    for i in range(N):
+        for j, k in enumerate(ks):
+            k_eff = min(int(k), N - 1)
+            nbrs = nn_sorted[i, 1:k_eff + 1]  # exclude self
+            idx = np.concatenate(([i], nbrs))
+
+            y_sub = yr[idx]
+            uniq = np.unique(y_sub)
+
+            # ---- guard: need at least 2 classes for LR ----
+            if uniq.size < 2:
+                if fallback == "nan":
+                    feats[i, j] = np.nan
+                elif fallback == "majority":
+                    maj = np.bincount(y_sub).argmax()
+                    feats[i, j] = float(np.mean(np.asarray(y_test) == maj))
+                else:  # "skip" or unknown -> 0.0
+                    feats[i, j] = 0.0
+                continue
+
+            lr = LogisticRegression(max_iter=max_iter, random_state=seed)
+            lr.fit(Xr[idx], y_sub)
+            feats[i, j] = lr.score(X_test, y_test)
+
+    return feats
+
+'Subset inclusion frequency'
+def inclusion_freq(X_raw, y_raw, X_test, y_test, subset_sizes = (10, 100, 200),
+                   n_subsets_per_size = 1000, topk = 100, max_iter = 100, seed = 23):
+    rng = np.random.default_rng(seed=seed)
+    Xr = np.asarray(X_raw, dtype=float)
+    yr = np.asarray(y_raw, dtype=int)
+    N = Xr.shape[0]
+
+    feats = np.zeros((N, len(subset_sizes)), dtype=float)
+
+    for j, m in enumerate(subset_sizes):
+        m_eff = min(int(m), N)
+        if m_eff < 2:
+            continue
+        accs = []
+        subs = []
+
+        for t in range(int(n_subsets_per_size)):
+            idx = rng.choice(N, size = m_eff, replace = False)
+            y_sub = yr[idx]
+            if np.unique(y_sub).size < 2:
+                acc = -np.inf
+            else:
+                lr = LogisticRegression(max_iter=max_iter, random_state=seed)
+                lr.fit(Xr[idx], y_sub)
+                acc = lr.score(X_test, y_test)
+
+            accs.append(acc)
+            subs.append(idx)
+        accs = np.array(accs)
+
+        topk_eff = min(int(topk), len(accs))
+        top_idx = np.argsort(accs)[::-1][:topk_eff]
+
+        counts = np.zeros(N, dtype=float)
+        for t in top_idx:
+            counts[subs[t]] += 1
+        feats[:,j] = counts / max(1, topk_eff)
+
+    return feats
+
+
 def load_and_preprocess(train_csv, test_csv, d = svd_d):
     df_train = pd.read_csv(train_csv)
     X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
@@ -162,9 +475,97 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
     model_acc = lr_full.score(X_test, y_test)
     total_util = model_acc
 
+    ## Compute gradient  info
+    n, d_feat = X_raw.shape
+    P = lr_full.predict_proba(X_raw)  # (N, C)
+    classes = lr_full.classes_  # shape (C,)
+    class_to_idx = {c: i for i, c in enumerate(classes)}
+
+    n = X_raw.shape[0]
+    col_idx = np.array([class_to_idx[y] for y in y_raw])  # (N,)
+
+    Y_onehot = np.zeros_like(P)
+    Y_onehot[np.arange(n), col_idx] = 1.0
+
+    grad_w = (P - Y_onehot)[:, :, None] * X_raw[:, None, :]  # (N, C, d_feat)
+    grad_norm = np.linalg.norm(grad_w, axis=(1, 2))  # (N,)
+
+    p_true = P[np.arange(n), col_idx]  # (N,)
+    grad_err = 1.0 - p_true
+    def _standardize(arr):
+        mu = arr.mean()
+        std = arr.std()
+        if std < 1e-12:
+            return np.zeros_like(arr)
+        return (arr - mu) / std
+
+    grad_norm_z = _standardize(grad_norm)
+    grad_err_z  = _standardize(grad_err)
+
+    # ## Injection of Loss History statistics
+    # loss_stats = loss_history_LR(X_raw, y_raw, epochs=100, log_every=1, lr=1e-1, device = device)
+    # loss_stats_z = np.column_stack([_standardize(loss_stats[:, j]) for j in range(loss_stats.shape[1])])
+
+    # ## Mute Injection of Loss History statistics
+    # loss_stats_z = np.zeros((X_raw.shape[0], 0), dtype=float)
+
+    # ## Injection of time series loss
+    # loss_series_LR = loss_LR_series(X_raw, y_raw, epochs = 101, log_every = 1,
+    #                                 lr = 1e-1, device = device, seed = 23)
+    # loss_stats_z =  np.zeros_like(loss_series_LR, dtype=float)
+    # for j in range(loss_series_LR.shape[1]):
+    #     loss_stats_z[:, j] = _standardize(loss_series_LR[:, j])
+
+    ## Injection of loss history per 10 epochs
+    loss_snaps = loss_LR_snapshots(X_raw, y_raw, epochs=100, step=10, lr=1e-1, device=device, seed=23)
+    loss_stats_z = np.zeros_like(loss_snaps, dtype=float)
+    for j in range(loss_snaps.shape[1]):
+        loss_stats_z[:, j] = _standardize(loss_snaps[:, j])
+
+    ## Injection of KNN's accuracy
+    knn_acc = knn_subset_acc(X_raw, y_raw, X_test, y_test, ks = (5, 10, 100), metric = "euclidean",
+                             max_iter = 100, seed = 23)
+    knn_acc_z = np.zeros_like(knn_acc, dtype=float)
+    for j in range(knn_acc.shape[1]):
+        knn_acc_z[:, j] = _standardize(knn_acc[:, j])
+
+    ## Injection of inclusion frequency
+    inc_freq = inclusion_freq(X_raw, y_raw, X_test, y_test, subset_sizes = (10, 100, 200),
+                              n_subsets_per_size = 300, topk = 100, max_iter = 100, seed = 23)
+    inc_freq_z = np.zeros_like(inc_freq, dtype=float)
+    for j in range(inc_freq.shape[1]):
+        inc_freq_z[:, j] = _standardize(inc_freq[:, j])
+
+
+
+    ## Compute LOO values
+    n = X_raw.shape[0]
+    loo_raw = np.zeros(n, dtype=float)
+
+    for i in range(n):
+        mask = np.ones(n, dtype=bool)
+        mask[i] = False
+
+        lr_i = LogisticRegression(max_iter=100, random_state=23)
+        lr_i.fit(X_raw[mask], y_raw[mask])
+        acc_i = lr_i.score(X_test, y_test)
+
+        loo_raw[i] = model_acc - acc_i  # LOO_i = U(D) - U(D\{i})
+    mu = loo_raw.mean()
+    std = loo_raw.std()
+    if std < 1e-12:
+        loo_z = np.zeros_like(loo_raw)
+    else:
+        loo_z = (loo_raw - mu) / std
+
     data_list = []
     for c in C_List:
-        data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c)
+        # data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c, loo_z = loo_z)
+        # data = build_graph(X_raw, y_raw, phi, total_util, c=c, loo_z=loo_z, grad_norm_z=grad_norm_z,
+        #                      grad_err_z=grad_err_z, loss_stats_z = loss_stats_z, d=d)
+        data = build_graph(X_raw, y_raw, phi, total_util, c=c, loo_z=loo_z, grad_norm_z=grad_norm_z,
+                             grad_err_z=grad_err_z, loss_stats_z = loss_stats_z, knn_acc_z = knn_acc_z,
+                                inc_freq_z = inc_freq_z, d=d)
         data_list.append(data)
     return data_list
 
@@ -172,75 +573,6 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
 4. Model Construction
 '''
 ' Version A. Sequantial GIN & GT '
-class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
-        super().__init__()
-        def mlp(i, o):
-            return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
-
-        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
-        self.branches = torch.nn.ModuleList()
-        for _ in C_List:
-            convs = torch.nn.ModuleList()
-            for layer in range(3):
-                convs.append(
-                    GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
-                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
-                            activation = ReLU())
-                )
-            self.branches.append(convs)
-
-        self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
-
-        d_concat = hidden_channels * len(C_List)
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
-
-        self.Z = Sequential(Linear(d_concat, hidden_channels), ReLU())
-        self.out = Sequential(
-            Linear(hidden_channels + 3, hidden_channels * 2),
-            ReLU(),
-            Linear(hidden_channels * 2, 100),
-            ReLU(),
-            Linear(100, out_channels)
-        )
-
-    def forward(self, data_list):
-        data = data_list[0].to(device)
-        x0 = data.x
-        output_GIN = []
-        for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
-            node_input = gdata.x.to(device)
-            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)
-            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)
-
-            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
-            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label
-
-            g = dgl.graph(
-                (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
-                num_nodes=node_input.size(0),
-                device=device
-            )
-            g.edata['w'] = edge_weight
-
-            for conv in convs:
-                node_input = conv(g, node_input, edge_weight=g.edata['w'])
-            output_GIN.append(node_input)
-
-        output_GIN = torch.cat(output_GIN, dim = 1)
-        output_skip = output_GIN + self.skip_lin(x0)
-
-        output_skip = output_skip.unsqueeze(0)  # (1, N, d_concat)
-        output_gt = self.gt(output_skip).squeeze(0)
-
-        output_h = self.Z(output_gt)
-        k_col = data.k_feat
-        h_plus = torch.cat([output_h, data.k_feat], dim = 1)
-        return self.out(h_plus)
-
-# ' Version B. Parallel GIN & GT '
 # class GINShap(torch.nn.Module):
 #     def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):
 #         super().__init__()
@@ -261,18 +593,14 @@ class GINShap(torch.nn.Module):
 #             self.branches.append(convs)
 #
 #         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
-#         d_concat = hidden_channels * len(C_List)
 #
+#         d_concat = hidden_channels * len(C_List)
 #         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
 #         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 #
-#         self.pre_gt = Linear(in_channels, d_concat)
-#
-#         self.Z_gin = Sequential(Linear(d_concat, hidden_channels), ReLU())
-#         self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU())
-#
+#         self.Z = Sequential(Linear(d_concat, hidden_channels), ReLU())
 #         self.out = Sequential(
-#             Linear( (hidden_channels * 2) + 3, hidden_channels * 2),
+#             Linear(hidden_channels + 3, hidden_channels * 2),
 #             ReLU(),
 #             Linear(hidden_channels * 2, 100),
 #             ReLU(),
@@ -293,7 +621,8 @@ class GINShap(torch.nn.Module):
 #
 #             g = dgl.graph(
 #                 (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
-#                 num_nodes=node_input.size(0),device=device
+#                 num_nodes=node_input.size(0),
+#                 device=device
 #             )
 #             g.edata['w'] = edge_weight
 #
@@ -301,22 +630,101 @@ class GINShap(torch.nn.Module):
 #                 node_input = conv(g, node_input, edge_weight=g.edata['w'])
 #             output_GIN.append(node_input)
 #
-#         gin_cat = torch.cat(output_GIN, dim = 1)
-#         gin_cat = gin_cat + self.skip_lin(x0)
+#         output_GIN = torch.cat(output_GIN, dim = 1)
+#         output_skip = output_GIN + self.skip_lin(x0)
 #
-#         h_gin = self.Z_gin(gin_cat)
+#         output_skip = output_skip.unsqueeze(0)  # (1, N, d_concat)
+#         output_gt = self.gt(output_skip).squeeze(0)
 #
-#         gt_in = self.pre_gt(x0)
-#         gt_in = gt_in.unsqueeze(0)
-#         gt_out = self.gt(gt_in).squeeze(0)
-#         h_gt = self.Z_gt(gt_out)
-#
-#         h_fused = torch.cat([h_gin, h_gt], dim=1)
-#
+#         output_h = self.Z(output_gt)
 #         k_col = data.k_feat
-#         h_plus = torch.cat([h_fused, k_col], dim = 1)
+#         h_plus = torch.cat([output_h, data.k_feat], dim = 1)
 #         return self.out(h_plus)
-#
+
+' Version B. Parallel GIN & GT '
+class GINShap(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2):
+        super().__init__()
+        def mlp(i, o):
+            return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
+
+        self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))
+        self.betas = torch.nn.Parameter(torch.ones(len(C_List)))
+        self.branches = torch.nn.ModuleList()
+        for _ in C_List:
+            convs = torch.nn.ModuleList()
+            for layer in range(2):
+                convs.append(
+                    GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
+                            aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
+                            activation = ReLU())
+                )
+            self.branches.append(convs)
+
+        self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))
+        d_concat = hidden_channels * len(C_List)
+
+        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
+        self.gt = TransformerEncoder(encoder_layer, num_layers = 2)
+
+        self.pre_gt = Linear(in_channels, d_concat)
+
+        self.Z_gin = Sequential(Linear(d_concat, hidden_channels), ReLU())
+        self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU())
+
+        self.out = Sequential(
+            Linear( (hidden_channels * 2) + 3, hidden_channels * 2),
+            ReLU(),
+            Linear(hidden_channels * 2, 100),
+            ReLU(),
+            Linear(100, out_channels)
+        )
+
+    def forward(self, data_list):
+        data = data_list[0].to(device)
+        x0 = data.x
+        output_GIN = []
+        for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
+            node_input = gdata.x.to(device)
+            edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)
+            edge_attr_label = gdata.edge_attr_label.view(-1).to(device)
+
+            weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)
+            edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label
+
+            ## GPU Version
+            g = dgl.graph(
+                (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),
+                num_nodes=node_input.size(0),device=device
+            )
+
+            ## CPU Version
+            # g = dgl.graph(
+            #     (gdata.edge_index[0], gdata.edge_index[1]),
+            #     num_nodes=node_input.size(0)
+            # )
+            g.edata['w'] = edge_weight
+
+            for conv in convs:
+                node_input = conv(g, node_input, edge_weight=g.edata['w'])
+            output_GIN.append(node_input)
+
+        gin_cat = torch.cat(output_GIN, dim = 1)
+        gin_cat = gin_cat + self.skip_lin(x0)
+
+        h_gin = self.Z_gin(gin_cat)
+
+        gt_in = self.pre_gt(x0)
+        gt_in = gt_in.unsqueeze(0)
+        gt_out = self.gt(gt_in).squeeze(0)
+        h_gt = self.Z_gt(gt_out)
+
+        h_fused = torch.cat([h_gin, h_gt], dim=1)
+
+        k_col = data.k_feat
+        h_plus = torch.cat([h_fused, k_col], dim = 1)
+        return self.out(h_plus)
+
 
 '''
 5. Training (standard scheme)
@@ -325,6 +733,10 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
           holdout_bases: list = None, out_dir: str = None, scheduler_type: str = "step", step_size: int = 50,
           step_gamma: float = 0.5, lambda_fn = None, log_every: int = 5):
     model.to(device)
+
+    ## Record time
+    train_time_hist = []
+    test_time_hist = []
 
     if out_dir:
         os.makedirs(out_dir, exist_ok = True)
@@ -348,7 +760,14 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
     loss_history = []
     per_epoch_rows = []
 
+    catalog = None
+    if holdout_bases and base_test_dir:
+        catalog = {it["base_name"]: it
+                   for it in discover_datasets(base_test_dir, require_tmc=False)}
+
     for ep in range(1, epochs + 1):
+        if device.type == "cuda": torch.cuda.synchronize()
+        t0_train = time.perf_counter()
         model.train()
         losses = []
         for data_list in dataset_graphs:
@@ -363,6 +782,8 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
             loss.backward()
             optimizer.step()
             losses.append(loss.detach())
+        if device.type == "cuda": torch.cuda.synchronize()
+        train_time_hist.append(time.perf_counter() - t0_train)
 
         if scheduler is not None:
             scheduler.step()
@@ -371,31 +792,72 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
         loss_history.append(L.item())
 
         avg_mse = None
-        if holdout_bases and base_test_dir:
+        t0_test = None
+        # if holdout_bases and base_test_dir:
+        if catalog is not None:
+            if device.type == "cuda": torch.cuda.synchronize()
+            t0_test = time.perf_counter()
+
             model.eval()
             row = {"epoch": ep}
-            with torch.no_grad():
-                catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
-                mses = []
-                for base in holdout_bases:
-                    if base not in catalog:
-                        continue
-                    p = catalog[base]
-                    dl = load_and_preprocess(p['train_like'], p['test'], d = model.skip_lin.in_features)
+            # with torch.no_grad():
+            #     catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
+            #     mses = []
+            #     for base in holdout_bases:
+            #         if base not in catalog:
+            #             continue
+            #         p = catalog[base]
+            #         # dl = load_and_preprocess(p['train_like'], p['test'], d = model.skip_lin.in_features)
+            #         ## inject LOO
+            #         dl = load_and_preprocess(p['train_like'], p['test'], d=svd_d)
+            #         pred_scaled = model(dl).view(-1)
+            #         phi_t = dl[0].phi.to(device).view(-1)
+            #         total_util_t = dl[0].total_util.to(device)
+            #         N_t = phi_t.numel()
+            #         scale_t = (N_t/total_util_t)
+            #         phi_t_scaled = phi_t * scale_t
+            #         m = F.mse_loss(pred_scaled, phi_t_scaled, reduction='mean').item()
+            #         row[base] = m
+            #         mses.append(m)
+            #     if mses:
+            #         avg_mse = float(np.mean(mses))
+            #         row['avg_mse'] = avg_mse
+            #         per_epoch_rows.append(row)
+
+            ## To incorporate with injection of gradient info of LR
+            # if holdout_bases and base_test_dir:
+            # if catalog is not None:
+            model.eval()
+            row = {"epoch": ep}
+            # catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
+            mses = []
+
+            # for base in holdout_bases:
+            for base in (holdout_bases or []):
+                if base not in catalog:
+                    continue
+                p = catalog[base]
+                ## Put LR outside of no_grad block to allow recording loss history
+                dl = load_and_preprocess(p['train_like'], p['test'], d=svd_d)
+                with torch.no_grad():
                     pred_scaled = model(dl).view(-1)
                     phi_t = dl[0].phi.to(device).view(-1)
                     total_util_t = dl[0].total_util.to(device)
                     N_t = phi_t.numel()
-                    scale_t = (N_t/total_util_t)
-                    phi_t_scaled = phi_t * scale_t
+                    phi_t_scaled = phi_t * (N_t / total_util_t)
                     m = F.mse_loss(pred_scaled, phi_t_scaled, reduction='mean').item()
-                    row[base] = m
-                    mses.append(m)
-                if mses:
-                    avg_mse = float(np.mean(mses))
-                    row['avg_mse'] = avg_mse
-                    per_epoch_rows.append(row)
+                row[base] = m
+                mses.append(m)
 
+            if mses:
+                avg_mse = float(np.mean(mses))
+                row['avg_mse'] = avg_mse
+                per_epoch_rows.append(row)
+
+            if device.type == "cuda": torch.cuda.synchronize()
+            test_time_hist.append(time.perf_counter() - t0_test)
+        else:
+            test_time_hist.append(0.0)
         # if (ep % 5 == 0) and (avg_mse is not None):
         #     print(f'Epoch {ep:4d} | Test avg MSE: {avg_mse:.6e}')  # *** CHANGED
         if (ep % log_every == 0) or (ep == 1) or (ep == epochs):
@@ -408,6 +870,12 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
         xs = np.arange(len(loss_history))
         ys = np.array(loss_history)
         pd.DataFrame({"epoch": xs + 1, "train_mse": ys}).to_csv(os.path.join(out_dir, "Training_MSE.csv"), index = False)
+        pd.DataFrame({
+            "epoch": xs + 1,
+            "train_mse": ys,
+            "train_sec": np.array(train_time_hist, dtype=float),
+            "test_sec": np.array(test_time_hist, dtype=float),
+        }).to_csv(os.path.join(out_dir, "Training_MSE_and_Time.csv"), index=False)
 
         if per_epoch_rows:
             df_full = pd.DataFrame(per_epoch_rows)
@@ -536,10 +1004,11 @@ def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str =
     graph_dir = graph_dir or out_dir
     _ensure_dir(graph_dir)
 
-    triplets = discover_datasets(base_train_dir, require_tmc = False)
+    triplets = discover_datasets(base_train_dir, require_tmc=False)
     for item in triplets:
         train_csv, test_csv = item["train_like"], item["test"]
-        dlist = load_and_preprocess(train_csv, test_csv, d = gnn.skip_lin.in_features)
+        # dlist = load_and_preprocess(train_csv, test_csv, d=gnn.skip_lin.in_features)
+        dlist = load_and_preprocess(train_csv, test_csv, d=svd_d)  # use svd_d
         preds = predict(gnn, dlist)
 
         df_train = pd.read_csv(train_csv)
@@ -619,7 +1088,9 @@ def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str, a =
             continue
         paths = catalog[base]
 
-        dlist = load_and_preprocess(paths["train_like"], paths["test"], d = gnn.skip_lin.in_features)
+        # dlist = load_and_preprocess(paths["train_like"], paths["test"], d = gnn.skip_lin.in_features)
+        ## Inject LOO
+        dlist = load_and_preprocess(paths['train_like'], paths['test'], d=svd_d)
         preds = predict(gnn, dlist)
 
         df_tr_like = pd.read_csv(paths['train_like'])
@@ -728,7 +1199,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
     _ensure_dir(OUT_DIR)
 
     triplets = discover_datasets(BASE_TRAIN, require_tmc = False)
-    dataset_graphs = [load_and_preprocess(it["train_like"], it["test"], d = in_channels) for it in triplets]
+    dataset_graphs = [load_and_preprocess(it["train_like"], it["test"], d = svd_d) for it in triplets]
 
     gnn = GINShap(in_channels = in_channels, hidden_channels = hidden_channels, heads = heads)
     _ = train(gnn, dataset_graphs, epochs=epochs, lr=lr,
@@ -749,17 +1220,31 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 ########################################  Experiments ###############################################
 
 if __name__ == "__main__":
-    BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Train'
-    BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/251107/Trial01'
-    HOLDOUTS   = ['Iris_1', 'MNIST_369xx_20', 'MNIST_459xx_22', 'MNIST_89xxx_21']
+    BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
+    BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260101/Trial01'
+    HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1']
 
     _ = train_then_diagnose(
         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
-        in_channels=100, hidden_channels=256, heads=8,
-        epochs=1000, lr=1e-5, weight_decay=1e-7,
+        in_channels=FEAT_DIM, hidden_channels=64, heads=2,
+        epochs=700, lr=1e-5, weight_decay=1e-7,
         scheduler_type="None", step_size=50, step_gamma = 0.5
     )
+
+# if __name__ == "__main__":
+#     BASE_TRAIN = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Train'
+#     BASE_TEST  = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Test'
+#     OUT_DIR    = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251130/Trial01'
+#     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'Vehicle_1']
+#         # , 'CIFAR10_19xxx_2', 'FashionMNIST_0469x_1', 'MNIST_89xxx_21']
+#
+#     _ = train_then_diagnose(
+#         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
+#         in_channels=100, hidden_channels=128, heads=4,
+#         epochs=1000, lr=1e-5, weight_decay=1e-7,
+#         scheduler_type="None", step_size=50, step_gamma = 0.5
+#     )
 
 # if __name__ == "__main__":
 #     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Train'

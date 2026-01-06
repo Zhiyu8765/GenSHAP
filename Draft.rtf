@@ -1,0 +1,1045 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fmodern\fcharset0 Courier-Oblique;\f1\fmodern\fcharset0 Courier;}
+{\colortbl;\red255\green255\blue255;\red78\green112\blue88;\red23\green23\blue26;\red195\green123\blue90;
+\red174\green176\blue183;\red89\green158\blue96;\red38\green157\blue169;\red117\green114\blue185;\red103\green107\blue114;
+\red71\green149\blue242;\red152\green54\blue29;\red92\green96\blue103;\red160\green0\blue163;\red128\green63\blue122;
+\red31\green46\blue49;}
+{\*\expandedcolortbl;;\csgenericrgb\c30588\c43922\c34510;\csgenericrgb\c9020\c9020\c10196;\csgenericrgb\c76471\c48235\c35294;
+\csgenericrgb\c68235\c69020\c71765;\csgenericrgb\c34902\c61961\c37647;\csgenericrgb\c14902\c61569\c66275;\csgenericrgb\c45882\c44706\c72549;\csgenericrgb\c40392\c41961\c44706;
+\csgenericrgb\c27843\c58431\c94902;\csgenericrgb\c59608\c21176\c11373;\csgenericrgb\c36078\c37647\c40392;\csgenericrgb\c62745\c0\c63922;\csgenericrgb\c50196\c24706\c47843;
+\csgenericrgb\c12157\c18039\c19216;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\i\fs30 \cf2 \cb3 '''\
+0. Import Packages\
+'''\
+
+\f1\i0 \cf4 import \cf5 os\
+os.environ[\cf6 "CUDA_VISIBLE_DEVICES"\cf5 ] = \cf6 "2"\
+\cf4 import \cf5 re\
+\cf4 import \cf5 dgl\
+\cf4 import \cf5 torch\
+\cf4 import \cf5 numpy \cf4 as \cf5 np\
+\cf4 import \cf5 pandas \cf4 as \cf5 pd\
+\cf4 import \cf5 torch.nn.functional \cf4 as \cf5 F\
+\cf4 import \cf5 matplotlib.pyplot \cf4 as \cf5 plt\
+\
+\cf4 from \cf5 matplotlib.lines \cf4 import \cf5 Line2D\
+\cf4 from \cf5 itertools \cf4 import \cf5 cycle\
+\cf4 from \cf5 dgl.nn.pytorch.conv \cf4 import \cf5 GINConv\
+\cf4 from \cf5 torch_geometric.data \cf4 import \cf5 Data\
+\cf4 from \cf5 torch.optim.lr_scheduler \cf4 import \cf5 StepLR, LambdaLR\
+\cf4 from \cf5 torch.nn \cf4 import \cf5 (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)\
+\cf4 from \cf5 sklearn.metrics.pairwise \cf4 import \cf5 pairwise_distances\
+\cf4 from \cf5 sklearn.linear_model \cf4 import \cf5 LogisticRegression\
+\cf4 from \cf5 Scripts.Additional_Scripts.PerformancePlots_4lines \cf4 import \cf5 PerformancePlot_Removal\
+\
+\cf6 'Check Availability of GPU'\
+\cf5 torch.cuda.set_device(\cf7 0\cf5 )\
+device = torch.device(\cf6 "cuda" \cf4 if \cf5 torch.cuda.is_available() \cf4 else \cf6 "cpu"\cf5 )\
+\cf8 print\cf5 (\cf6 "CUDA available:"\cf5 , torch.cuda.is_available())\
+\cf4 if \cf5 torch.cuda.is_available():\
+    \cf8 print\cf5 (\cf6 "Current device:"\cf5 , torch.cuda.current_device())\
+    \cf8 print\cf5 (\cf6 "Device name:"\cf5 , torch.cuda.get_device_name(torch.cuda.current_device()))\
+\
+\cf6 'On CPU'\
+\cf9 # device = torch.device("cpu")\
+# print("CUDA available:", torch.cuda.is_available())\
+# print("Using device:", device)\
+# os.environ.pop("CUDA_VISIBLE_DEVICES", None)\
+# USE_CUDA = torch.cuda.is_available()\
+# device = torch.device("cuda" if USE_CUDA else "cpu")\
+#\
+# print("CUDA available:", USE_CUDA)\
+# if USE_CUDA:\
+#     try:\
+#         print("Current device:", torch.cuda.current_device())\
+#         print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))\
+#     except Exception as e:\
+#         print("CUDA info not available:", e)\
+\
+\cf6 '''\
+1. SVD\
+'''\
+'Flip Sign'\
+\cf4 def \cf10 flip_pe_sign\cf5 (x, method=\cf6 'sum'\cf5 ):\
+    \cf4 assert \cf5 method \cf4 in \cf5 [\cf6 'none'\cf5 , \cf6 'pos'\cf5 , \cf6 'sum'\cf5 , \cf6 'l1'\cf5 , \cf6 'l2'\cf5 , \cf6 'linf'\cf5 , \cf6 'random'\cf5 ]\
+    \cf4 if \cf5 method == \cf6 'none'\cf5 :\
+        \cf4 return \cf5 x\
+    \cf4 elif \cf5 method == \cf6 'random'\cf5 :\
+        sign = torch.randint(\cf7 0\cf5 , \cf7 2\cf5 , (x.shape[\cf7 1\cf5 ],))*\cf7 2 \cf5 - \cf7 1\
+        \cf4 return \cf5 x * sign\
+    fliped_x = -\cf7 1 \cf5 * x\
+    \cf4 if \cf5 method == \cf6 'pos'\cf5 :\
+        x_v = torch.sum(x >= \cf7 0\cf5 , \cf11 dim\cf5 =\cf7 0\cf5 )\
+        fliped_x_v = torch.sum(fliped_x >= \cf7 0\cf5 , \cf11 dim\cf5 =\cf7 0\cf5 )\
+    \cf4 elif \cf5 method == \cf6 'sum'\cf5 :\
+        x_v = torch.sum(x, \cf11 dim\cf5 =\cf7 0\cf5 )\
+        fliped_x_v = torch.sum(fliped_x, \cf11 dim\cf5 =\cf7 0\cf5 )\
+    \cf4 elif \cf5 method == \cf6 'linf'\cf5 :\
+        x_v, _ = torch.max(x, \cf11 dim\cf5 =\cf7 0\cf5 )\
+        fliped_x_v, _ = torch.max(fliped_x, \cf11 dim\cf5 =\cf7 0\cf5 )\
+    \cf4 elif \cf5 method == \cf6 'l1'\cf5 :\
+        x_pos_mask = x >= \cf7 0\
+        \cf5 x_v = torch.norm(x * x_pos_mask, \cf11 dim\cf5 =\cf7 0\cf5 , \cf11 p\cf5 =\cf7 1\cf5 )\
+        fliped_x_pos_mask = fliped_x >= \cf7 0\
+        \cf5 fliped_x_v = torch.norm(fliped_x * fliped_x_pos_mask, \cf11 dim\cf5 =\cf7 0\cf5 , \cf11 p\cf5 =\cf7 1\cf5 )\
+    \cf4 elif \cf5 method == \cf6 'l2'\cf5 :\
+        x_pos_mask = x >= \cf7 0\
+        \cf5 x_v = torch.norm(x * x_pos_mask, \cf11 dim\cf5 =\cf7 0\cf5 , \cf11 p\cf5 =\cf7 2\cf5 )\
+        fliped_x_pos_mask = fliped_x >= \cf7 0\
+        \cf5 fliped_x_v = torch.norm(fliped_x * fliped_x_pos_mask, \cf11 dim\cf5 =\cf7 0\cf5 , \cf11 p\cf5 =\cf7 2\cf5 )\
+    \cf4 else\cf5 :\
+        \cf4 raise \cf8 NotImplementedError\
+    \cf5 diff = x_v - fliped_x_v\
+    sign = torch.sign(diff)\
+    \cf4 return \cf5 x * sign\
+\
+svd_d = \cf7 100\
+\cf9 # FEAT_DIM = svd_d\
+## Injection of LOO\
+# FEAT_DIM = svd_d + 1\
+## Injection of gradient norm and error\
+# FEAT_DIM = svd_d + 3\
+## Injection of LOO + grad norm + grad error + Local distance-skewness\
+# FEAT_DIM = svd_d + 4\
+## Injection of other row statistics (mean, var, min, max, skewness, kurtosis)\
+# FEAT_DIM = svd_d + 9\
+## Injection of statistics on loss history\
+\cf5 FEAT_DIM = svd_d + \cf7 15\
+\
+\
+\cf4 def \cf10 SVD_Transform\cf5 (A, d = svd_d):\
+    U, S, Vt = np.linalg.svd(A, \cf11 full_matrices\cf5 =\cf4 False\cf5 )\
+    k = \cf8 min\cf5 (d, U.shape[\cf7 1\cf5 ])\
+    X_svd = U[:, :k] * np.sqrt(S[:k])\
+    \cf4 if \cf5 k < d:\
+        pad = np.zeros((X_svd.shape[\cf7 0\cf5 ], d - k), \cf11 dtype \cf5 = X_svd.dtype)\
+        X_svd = np.concatenate([X_svd, pad], \cf11 axis \cf5 = \cf7 1\cf5 )\
+    X_t = torch.tensor(X_svd, \cf11 dtype\cf5 =torch.float)\
+    X_t = flip_pe_sign(X_t, \cf11 method\cf5 =\cf6 'sum'\cf5 )\
+    \cf4 return \cf5 X_t.numpy()\
+\
+\cf6 '''\
+2. Graph Construction\
+'''\
+\cf5 C_List = [\cf7 0.25\cf5 , \cf7 0.5\cf5 , \cf7 1\cf5 , \cf7 2\cf5 , \cf7 4\cf5 , \cf7 8\cf5 ]\
+\
+\cf4 def \cf10 build_graph\cf5 (X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z, loss_stats_z, d=svd_d):\
+    D = pairwise_distances(X_raw, \cf11 metric\cf5 =\cf6 'euclidean'\cf5 )\
+    \cf9 # D = pairwise_distances(X_raw, metric='manhattan')\
+    # ## Gaussian Kernel\
+    # sigma = np.mean(D)\
+    # A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))\
+    ### Laplace Kernel\
+    # sigma = np.mean(D)\
+    # eps = 1e-12\
+    # A = np.exp(-D / (c * sigma + eps))\
+    ## Student t kernel\
+    \cf5 sigma = np.mean(D)\
+    nu = \cf7 1.0\
+    \cf5 eps = \cf7 1e-12\
+    \cf5 scale2 = (c * sigma + eps) ** \cf7 2\
+    \cf5 A = (\cf7 1.0 \cf5 + (D ** \cf7 2\cf5 ) / (nu * scale2)) ** (-(nu + \cf7 2.0\cf5 ) / \cf7 2.0\cf5 )\
+\
+    \cf9 ## Injection of Local Distance Skewness\
+    \cf4 def \cf10 _standardize\cf5 (arr):\
+        mu = arr.mean()\
+        std = arr.std()\
+        \cf4 if \cf5 std < \cf7 1e-12\cf5 :\
+            \cf4 return \cf5 np.zeros_like(arr)\
+        \cf4 return \cf5 (arr - mu) / std\
+\
+    \cf4 def \cf10 _skewness_1d\cf5 (v, eps=\cf7 1e-12\cf5 ):\
+        v = np.asarray(v)\
+        m = v.mean()\
+        c = v - m\
+        s2 = np.mean(c**\cf7 2\cf5 )\
+        s = np.sqrt(s2 + eps)\
+        \cf4 return \cf5 np.mean(c**\cf7 3\cf5 ) / (s**\cf7 3 \cf5 + eps)\
+\
+    \cf4 def \cf10 _kurtosis_1d\cf5 (v, eps=\cf7 1e-12\cf5 ):\
+        v = np.asarray(v, \cf11 dtype\cf5 =\cf8 float\cf5 )\
+        m = v.mean()\
+        c = v - m\
+        s2 = np.mean(c ** \cf7 2\cf5 )\
+        s4 = (s2 + eps) ** \cf7 2\
+        \cf4 return \cf5 np.mean(c ** \cf7 4\cf5 ) / s4 - \cf7 3.0\
+\
+    \cf9 # # Injection of skewness (treat each row as random samples from one distribution)\
+    # Xr = np.asarray(X_raw, dtype=float)\
+    # skew_feat = np.array([_skewness_1d(Xr[i]) for i in range(Xr.shape[0])], dtype=float)  # (N,)\
+    # skew_dist_z = _standardize(skew_feat)  # (N,)\
+\
+    # Injection of more statistics\
+    \cf5 Xr = np.asarray(X_raw, \cf11 dtype\cf5 =\cf8 float\cf5 )\
+    row_mean = Xr.mean(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    row_var = Xr.var(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    row_min = Xr.min(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    row_max = Xr.max(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    row_skew = np.array([_skewness_1d(Xr[i]) \cf4 for \cf5 i \cf4 in \cf8 range\cf5 (Xr.shape[\cf7 0\cf5 ])])\
+    row_kurt = np.array([_kurtosis_1d(Xr[i]) \cf4 for \cf5 i \cf4 in \cf8 range\cf5 (Xr.shape[\cf7 0\cf5 ])])\
+\
+    stats = np.vstack([row_mean, row_var, row_min, row_max, row_skew, row_kurt]).T  \cf9 # (N, 6)\
+    \cf5 stats_z = np.column_stack([_standardize(stats[:, j]) \cf4 for \cf5 j \cf4 in \cf8 range\cf5 (stats.shape[\cf7 1\cf5 ])])\
+\
+    X_svd = SVD_Transform(A, \cf11 d \cf5 = d)\
+    y = np.asarray(y_raw).ravel()\
+    A_y = (y[:, \cf4 None\cf5 ] == y[\cf4 None\cf5 , :]).astype(\cf8 float\cf5 )\
+\
+    \cf9 # # Injection of LOO (standardised)\
+    # loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)\
+    # X_node = np.concatenate([X_svd, loo_z], axis=1)  # (N, svd_d + 1)\
+\
+    ## Injection of LOO + Gradient Norm + Grad Error\
+    \cf5 loo_z = np.asarray(loo_z).reshape(-\cf7 1\cf5 , \cf7 1\cf5 )  \cf9 # (N, 1)\
+    \cf5 grad_norm_z = np.asarray(grad_norm_z).reshape(-\cf7 1\cf5 , \cf7 1\cf5 )  \cf9 # (N, 1)\
+    \cf5 grad_err_z = np.asarray(grad_err_z).reshape(-\cf7 1\cf5 , \cf7 1\cf5 )  \cf9 # (N, 1)\
+\
+    ## weight on injected features\
+    \cf5 weight_extra = \cf7 1.0\
+    \cf9 # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z], axis=1)  # (N, 3)\
+    # extra_feats *= weight_extra\
+    # X_node = np.concatenate([X_svd, extra_feats], axis=1)  # (N, svd_d + 3)\
+    ## Injection of LOO + Gradient Norm + Grad Error + Local distance-skewness\
+    # skew_dist_z = np.asarray(skew_dist_z).reshape(-1, 1)\
+    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, skew_dist_z], axis=1)\
+    ## Injection of row statistics\
+    \cf5 extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z], \cf11 axis\cf5 =\cf7 1\cf5 )  \cf9 # (N, 9)\
+    \cf5 extra_feats *= weight_extra\
+    X_node = np.concatenate([X_svd, extra_feats], \cf11 axis\cf5 =\cf7 1\cf5 )\
+\
+\
+    N = X_raw.shape[\cf7 0\cf5 ]\
+    src, dst = np.triu_indices(N, \cf11 k\cf5 =\cf7 1\cf5 )\
+    eidx = np.vstack([src, dst])\
+    edge_index = torch.tensor(\
+        np.concatenate([eidx, eidx[::-\cf7 1\cf5 ]], \cf11 axis\cf5 =\cf7 1\cf5 ),\
+        \cf11 dtype\cf5 =torch.long, \cf11 device\cf5 =device\
+    )\
+\
+    w_feat = A[src, dst]\
+    w_label = A_y[src, dst]\
+    edge_attr_feat = torch.tensor(\
+        np.concatenate([w_feat, w_feat]),\
+        \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device\
+    ).unsqueeze(\cf7 1\cf5 )\
+    edge_attr_label = torch.tensor(\
+        np.concatenate([w_label, w_label]),\
+        \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device\
+    ).unsqueeze(\cf7 1\cf5 )\
+\
+    data = Data(\
+        \cf11 x\cf5 =torch.tensor(X_node, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device),  \cf9 # use X_node\
+        \cf11 edge_index\cf5 =edge_index,\
+        \cf11 edge_attr_feat\cf5 =edge_attr_feat,\
+        \cf11 edge_attr_label\cf5 =edge_attr_label\
+    )\
+\
+    \cf9 # Extra attributes\
+    \cf5 data.X_raw = torch.tensor(X_raw, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    data.phi = torch.tensor(phi, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    data.total_util = torch.tensor(total_util, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    data.y = torch.tensor(y_raw, \cf11 dtype\cf5 =torch.long, \cf11 device\cf5 =device)\
+    data.num_classes = \cf8 int\cf5 (\cf8 len\cf5 (np.unique(y)))\
+\
+    \cf9 # Record number of classes of each dataset\
+    \cf5 K = \cf8 int\cf5 (np.unique(y).size)\
+    k_vec = np.array([K, \cf7 1.0 \cf5 / \cf8 max\cf5 (\cf7 1\cf5 , K), np.log1p(K)], \cf11 dtype\cf5 =\cf8 float\cf5 )\
+    data.k_feat = torch.tensor(np.tile(k_vec, (N, \cf7 1\cf5 )), \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+\
+    \cf9 # # Keep LOO_z for diagnostics\
+    # data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)\
+\
+    ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics\
+    \cf5 data.loo_z = torch.tensor(loo_z, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    data.grad_norm_z = torch.tensor(grad_norm_z, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    data.grad_err_z  = torch.tensor(grad_err_z, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    \cf9 # data.skew_dist_z = torch.tensor(skew_dist_z, dtype=torch.float, device=device)\
+    \cf5 data.stats_z = torch.tensor(stats_z, \cf11 dtype\cf5 =torch.float, \cf11 device\cf5 =device)\
+    \cf4 return \cf5 data\
+\
+\cf6 '''\
+3. Data Preprocessing\
+'''\
+'Record loss history in training Logistic Regression (Using Pytorch)'\
+\cf4 def \cf10 loss_history_LR\cf5 (X_raw, y_raw, epochs=\cf7 100\cf5 , log_every=\cf7 1\cf5 , lr=\cf7 1e-1\cf5 ,\
+                    device=\cf6 "cpu"\cf5 , seed=\cf7 23\cf5 , eps=\cf7 1e-12\cf5 ):\
+    torch.manual_seed(seed)\
+    np.random.seed(seed)\
+\
+    X = torch.tensor(np.asarray(X_raw), \cf11 dtype\cf5 =torch.float32, \cf11 device\cf5 =device)\
+    y = torch.tensor(np.asarray(y_raw).astype(\cf8 int\cf5 ), \cf11 dtype\cf5 =torch.long, \cf11 device\cf5 =device)\
+    N, d = X.shape\
+    K = \cf8 int\cf5 (torch.unique(y).numel())\
+\
+    W = torch.zeros(d, K, \cf11 device\cf5 =device, \cf11 requires_grad\cf5 =\cf4 True\cf5 )\
+    b = torch.zeros(K, \cf11 device\cf5 =device, \cf11 requires_grad\cf5 =\cf4 True\cf5 )\
+\
+    opt = torch.optim.Adam([W, b], \cf11 lr\cf5 =lr)\
+\
+    loss_hist = []\
+    \cf4 for \cf5 ep \cf4 in \cf8 range\cf5 (\cf7 1\cf5 , epochs + \cf7 1\cf5 ):\
+        logits = X @ W + b\
+        loss = F.cross_entropy(logits, y, \cf11 reduction\cf5 =\cf6 "mean"\cf5 )\
+        opt.zero_grad(\cf11 set_to_none\cf5 =\cf4 True\cf5 )\
+        loss.backward()\
+        opt.step()\
+\
+        \cf4 if \cf5 (ep % log_every == \cf7 0\cf5 ) \cf4 or \cf5 (ep == epochs):\
+            \cf4 with \cf5 torch.no_grad():\
+                logits_t = X @ W + b\
+                per_sample = F.cross_entropy(logits_t, y, \cf11 reduction\cf5 =\cf6 "none"\cf5 )  \cf9 # (N,)\
+                \cf5 loss_hist.append(per_sample.detach().cpu().numpy())\
+\
+    L = np.stack(loss_hist, \cf11 axis\cf5 =\cf7 1\cf5 )  \cf9 # (N, T)\
+    \cf5 mu = L.mean(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    var = L.var(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    mn = L.min(\cf11 axis\cf5 =\cf7 1\cf5 )\
+    mx = L.max(\cf11 axis\cf5 =\cf7 1\cf5 )\
+\
+    c = L - mu[:, \cf4 None\cf5 ]\
+    s2 = (c**\cf7 2\cf5 ).mean(\cf11 axis\cf5 =\cf7 1\cf5 ) + eps\
+    s = np.sqrt(s2)\
+    skew = (c**\cf7 3\cf5 ).mean(\cf11 axis\cf5 =\cf7 1\cf5 ) / (s**\cf7 3 \cf5 + eps)\
+    kurt = (c**\cf7 4\cf5 ).mean(\cf11 axis\cf5 =\cf7 1\cf5 ) / (s2**\cf7 2 \cf5 + eps) - \cf7 3.0\
+\
+    \cf5 stats = np.vstack([mu, var, mn, mx, skew, kurt]).T  \cf9 # (N, 6)\
+    \cf4 return \cf5 stats\
+\
+\cf4 def \cf10 load_and_preprocess\cf5 (train_csv, test_csv, d = svd_d):\
+    df_train = pd.read_csv(train_csv)\
+    X_raw = df_train.drop(\cf11 columns\cf5 =[\cf6 'target'\cf5 ,\cf6 'PerDShap'\cf5 ]).astype(\cf8 float\cf5 ).to_numpy()\
+    \cf9 # X_raw = df_train.drop(columns=['target', 'TrueDShap']).astype(float).to_numpy()\
+    \cf5 y_raw = df_train[\cf6 'target'\cf5 ].to_numpy().astype(\cf8 int\cf5 )\
+    phi = df_train[\cf6 'PerDShap'\cf5 ].to_numpy()\
+    \cf9 # phi = df_train['TrueDShap'].to_numpy()\
+    \cf5 df_test = pd.read_csv(test_csv)\
+    X_test = df_test.drop(\cf11 columns\cf5 =[\cf6 'target'\cf5 ]).astype(\cf8 float\cf5 ).to_numpy()\
+    y_test = df_test[\cf6 'target'\cf5 ].to_numpy().astype(\cf8 int\cf5 )\
+\
+    lr_full = LogisticRegression(\cf11 max_iter \cf5 = \cf7 100\cf5 , \cf11 random_state\cf5 =\cf7 23\cf5 )\
+    lr_full.fit(X_raw, y_raw)\
+    model_acc = lr_full.score(X_test, y_test)\
+    total_util = model_acc\
+\
+    \cf9 ## Compute gradient  info\
+    \cf12 n\cf5 , \cf12 d_feat \cf5 = X_raw.shape\
+    P = lr_full.predict_proba(X_raw)  \cf9 # (N, C)\
+    \cf5 classes = lr_full.classes_  \cf9 # shape (C,)\
+    \cf5 class_to_idx = \{c: i \cf4 for \cf5 i, c \cf4 in \cf8 enumerate\cf5 (classes)\}\
+\
+    n = X_raw.shape[\cf7 0\cf5 ]\
+    col_idx = np.array([class_to_idx[y] \cf4 for \cf5 y \cf4 in \cf5 y_raw])  \cf9 # (N,)\
+\
+    \cf5 Y_onehot = np.zeros_like(P)\
+    Y_onehot[np.arange(n), col_idx] = \cf7 1.0\
+\
+    \cf5 grad_w = (P - Y_onehot)[:, :, \cf4 None\cf5 ] * X_raw[:, \cf4 None\cf5 , :]  \cf9 # (N, C, d_feat)\
+    \cf5 grad_norm = np.linalg.norm(grad_w, \cf11 axis\cf5 =(\cf7 1\cf5 , \cf7 2\cf5 ))  \cf9 # (N,)\
+\
+    \cf5 p_true = P[np.arange(n), col_idx]  \cf9 # (N,)\
+    \cf5 grad_err = \cf7 1.0 \cf5 - p_true\
+    \cf4 def \cf10 _standardize\cf5 (arr):\
+        mu = arr.mean()\
+        std = arr.std()\
+        \cf4 if \cf5 std < \cf7 1e-12\cf5 :\
+            \cf4 return \cf5 np.zeros_like(arr)\
+        \cf4 return \cf5 (arr - mu) / std\
+\
+    grad_norm_z = _standardize(grad_norm)\
+    grad_err_z  = _standardize(grad_err)\
+\
+    \cf9 ## Injection of Loss History statistics\
+    \cf5 loss_stats = loss_history_LR(X_raw, y_raw, \cf11 epochs\cf5 =\cf7 100\cf5 , \cf11 log_every\cf5 =\cf7 1\cf5 , \cf11 lr\cf5 =\cf7 1e-1\cf5 , \cf11 device \cf5 = device)\
+    loss_stats_z = np.column_stack([_standardize(loss_stats[:, j]) \cf4 for \cf5 j \cf4 in \cf8 range\cf5 (loss_stats.shape[\cf7 1\cf5 ])])\
+\
+    \cf9 ## Compute LOO values\
+    \cf5 n = X_raw.shape[\cf7 0\cf5 ]\
+    loo_raw = np.zeros(n, \cf11 dtype\cf5 =\cf8 float\cf5 )\
+\
+    \cf4 for \cf5 i \cf4 in \cf8 range\cf5 (n):\
+        mask = np.ones(n, \cf11 dtype\cf5 =\cf8 bool\cf5 )\
+        mask[i] = \cf4 False\
+\
+        \cf5 lr_i = LogisticRegression(\cf11 max_iter\cf5 =\cf7 100\cf5 , \cf11 random_state\cf5 =\cf7 23\cf5 )\
+        lr_i.fit(X_raw[mask], y_raw[mask])\
+        acc_i = lr_i.score(X_test, y_test)\
+\
+        loo_raw[i] = model_acc - acc_i  \cf9 # LOO_i = U(D) - U(D\\\{i\})\
+    \cf5 mu = loo_raw.mean()\
+    std = loo_raw.std()\
+    \cf4 if \cf5 std < \cf7 1e-12\cf5 :\
+        loo_z = np.zeros_like(loo_raw)\
+    \cf4 else\cf5 :\
+        loo_z = (loo_raw - mu) / std\
+\
+    data_list = []\
+    \cf4 for \cf5 c \cf4 in \cf5 C_List:\
+        \cf9 # data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c, loo_z = loo_z)\
+        \cf5 data = build_graph(X_raw, y_raw, phi, total_util, \cf11 c\cf5 =c, \cf11 loo_z\cf5 =loo_z, \cf11 grad_norm_z\cf5 =grad_norm_z,\
+                             \cf11 grad_err_z\cf5 =grad_err_z, \cf11 loss_stats_z \cf5 = loss_stats_z, \cf11 d\cf5 =d)\
+        data_list.append(data)\
+    \cf4 return \cf5 data_list\
+\
+\cf6 '''\
+4. Model Construction\
+'''\
+' Version A. Sequantial GIN & GT '\
+\cf9 # class GINShap(torch.nn.Module):\
+#     def __init__(self, in_channels, hidden_channels = 256, out_channels = 1, heads = 8):\
+#         super().__init__()\
+#         def mlp(i, o):\
+#             return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))\
+#\
+#         self.alphas = torch.nn.Parameter(torch.ones(len(C_List)))\
+#         self.betas = torch.nn.Parameter(torch.ones(len(C_List)))\
+#         self.branches = torch.nn.ModuleList()\
+#         for _ in C_List:\
+#             convs = torch.nn.ModuleList()\
+#             for layer in range(3):\
+#                 convs.append(\
+#                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),\
+#                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,\
+#                             activation = ReLU())\
+#                 )\
+#             self.branches.append(convs)\
+#\
+#         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List))\
+#\
+#         d_concat = hidden_channels * len(C_List)\
+#         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)\
+#         self.gt = TransformerEncoder(encoder_layer, num_layers = 3)\
+#\
+#         self.Z = Sequential(Linear(d_concat, hidden_channels), ReLU())\
+#         self.out = Sequential(\
+#             Linear(hidden_channels + 3, hidden_channels * 2),\
+#             ReLU(),\
+#             Linear(hidden_channels * 2, 100),\
+#             ReLU(),\
+#             Linear(100, out_channels)\
+#         )\
+#\
+#     def forward(self, data_list):\
+#         data = data_list[0].to(device)\
+#         x0 = data.x\
+#         output_GIN = []\
+#         for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):\
+#             node_input = gdata.x.to(device)\
+#             edge_attr_feat = gdata.edge_attr_feat.view(-1).to(device)\
+#             edge_attr_label = gdata.edge_attr_label.view(-1).to(device)\
+#\
+#             weights = F.softmax(torch.stack([self.alphas[idx], self.betas[idx]]), dim=0)\
+#             edge_weight = weights[0] * edge_attr_feat + weights[1] * edge_attr_label\
+#\
+#             g = dgl.graph(\
+#                 (gdata.edge_index[0].to(device), gdata.edge_index[1].to(device)),\
+#                 num_nodes=node_input.size(0),\
+#                 device=device\
+#             )\
+#             g.edata['w'] = edge_weight\
+#\
+#             for conv in convs:\
+#                 node_input = conv(g, node_input, edge_weight=g.edata['w'])\
+#             output_GIN.append(node_input)\
+#\
+#         output_GIN = torch.cat(output_GIN, dim = 1)\
+#         output_skip = output_GIN + self.skip_lin(x0)\
+#\
+#         output_skip = output_skip.unsqueeze(0)  # (1, N, d_concat)\
+#         output_gt = self.gt(output_skip).squeeze(0)\
+#\
+#         output_h = self.Z(output_gt)\
+#         k_col = data.k_feat\
+#         h_plus = torch.cat([output_h, data.k_feat], dim = 1)\
+#         return self.out(h_plus)\
+\
+\cf6 ' Version B. Parallel GIN & GT '\
+\cf4 class \cf5 GINShap(torch.nn.Module):\
+    \cf4 def \cf13 __init__\cf5 (\cf14 self\cf5 , in_channels, hidden_channels = \cf7 64\cf5 , out_channels = \cf7 1\cf5 , heads = \cf7 2\cf5 ):\
+        \cf8 super\cf5 ().\cf13 __init__\cf5 ()\
+        \cf4 def \cf10 mlp\cf5 (i, o):\
+            \cf4 return \cf5 Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))\
+\
+        \cf14 self\cf5 .alphas = torch.nn.Parameter(torch.ones(\cf8 len\cf5 (C_List)))\
+        \cf14 self\cf5 .betas = torch.nn.Parameter(torch.ones(\cf8 len\cf5 (C_List)))\
+        \cf14 self\cf5 .branches = torch.nn.ModuleList()\
+        \cf4 for \cf5 _ \cf4 in \cf5 C_List:\
+            convs = torch.nn.ModuleList()\
+            \cf4 for \cf5 layer \cf4 in \cf8 range\cf5 (\cf7 2\cf5 ):\
+                convs.append(\
+                    GINConv(mlp(in_channels \cf4 if \cf5 layer == \cf7 0 \cf4 else \cf5 hidden_channels, hidden_channels),\
+                            \cf11 aggregator_type \cf5 = \cf6 'sum'\cf5 , \cf11 init_eps \cf5 = \cf7 0.1\cf5 , \cf11 learn_eps \cf5 = \cf4 True\cf5 ,\
+                            \cf11 activation \cf5 = ReLU())\
+                )\
+            \cf14 self\cf5 .branches.append(convs)\
+\
+        \cf14 self\cf5 .skip_lin = Linear(in_channels, hidden_channels * \cf8 len\cf5 (C_List))\
+        d_concat = hidden_channels * \cf8 len\cf5 (C_List)\
+\
+        encoder_layer = TransformerEncoderLayer(\cf11 d_model\cf5 =d_concat, \cf11 nhead\cf5 =heads, \cf11 dropout\cf5 =\cf7 0.0\cf5 , \cf11 batch_first \cf5 = \cf4 True\cf5 )\
+        \cf14 self\cf5 .gt = TransformerEncoder(encoder_layer, \cf11 num_layers \cf5 = \cf7 2\cf5 )\
+\
+        \cf14 self\cf5 .pre_gt = Linear(in_channels, d_concat)\
+\
+        \cf14 self\cf5 .Z_gin = Sequential(Linear(d_concat, hidden_channels), ReLU())\
+        \cf14 self\cf5 .Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU())\
+\
+        \cf14 self\cf5 .out = Sequential(\
+            Linear( (hidden_channels * \cf7 2\cf5 ) + \cf7 3\cf5 , hidden_channels * \cf7 2\cf5 ),\
+            ReLU(),\
+            Linear(hidden_channels * \cf7 2\cf5 , \cf7 100\cf5 ),\
+            ReLU(),\
+            Linear(\cf7 100\cf5 , out_channels)\
+        )\
+\
+    \cf4 def \cf10 forward\cf5 (\cf14 self\cf5 , data_list):\
+        data = data_list[\cf7 0\cf5 ].to(device)\
+        x0 = data.x\
+        output_GIN = []\
+        \cf4 for \cf5 idx, (convs, gdata) \cf4 in \cf8 enumerate\cf5 (\cf8 zip\cf5 (\cf14 self\cf5 .branches, data_list)):\
+            node_input = gdata.x.to(device)\
+            edge_attr_feat = gdata.edge_attr_feat.view(-\cf7 1\cf5 ).to(device)\
+            edge_attr_label = gdata.edge_attr_label.view(-\cf7 1\cf5 ).to(device)\
+\
+            weights = F.softmax(torch.stack([\cf14 self\cf5 .alphas[idx], \cf14 self\cf5 .betas[idx]]), \cf11 dim\cf5 =\cf7 0\cf5 )\
+            edge_weight = weights[\cf7 0\cf5 ] * edge_attr_feat + weights[\cf7 1\cf5 ] * edge_attr_label\
+\
+            \cf9 ## GPU Version\
+            \cf5 g = dgl.graph(\
+                (gdata.edge_index[\cf7 0\cf5 ].to(device), gdata.edge_index[\cf7 1\cf5 ].to(device)),\
+                \cf11 num_nodes\cf5 =node_input.size(\cf7 0\cf5 ),\cf11 device\cf5 =device\
+            )\
+\
+            \cf9 ## CPU Version\
+            # g = dgl.graph(\
+            #     (gdata.edge_index[0], gdata.edge_index[1]),\
+            #     num_nodes=node_input.size(0)\
+            # )\
+            \cf5 g.edata[\cf6 'w'\cf5 ] = edge_weight\
+\
+            \cf4 for \cf5 conv \cf4 in \cf5 convs:\
+                node_input = conv(g, node_input, \cf11 edge_weight\cf5 =g.edata[\cf6 'w'\cf5 ])\
+            output_GIN.append(node_input)\
+\
+        gin_cat = torch.cat(output_GIN, \cf11 dim \cf5 = \cf7 1\cf5 )\
+        gin_cat = gin_cat + \cf14 self\cf5 .skip_lin(x0)\
+\
+        h_gin = \cf14 self\cf5 .Z_gin(gin_cat)\
+\
+        gt_in = \cf14 self\cf5 .pre_gt(x0)\
+        gt_in = gt_in.unsqueeze(\cf7 0\cf5 )\
+        gt_out = \cf14 self\cf5 .gt(gt_in).squeeze(\cf7 0\cf5 )\
+        h_gt = \cf14 self\cf5 .Z_gt(gt_out)\
+\
+        h_fused = torch.cat([h_gin, h_gt], \cf11 dim\cf5 =\cf7 1\cf5 )\
+\
+        k_col = data.k_feat\
+        h_plus = torch.cat([h_fused, k_col], \cf11 dim \cf5 = \cf7 1\cf5 )\
+        \cf4 return \cf14 self\cf5 .out(h_plus)\
+\
+\
+\cf6 '''\
+5. Training (standard scheme)\
+'''\
+\cf4 def \cf10 train\cf5 (model, dataset_graphs, epochs=\cf7 500\cf5 , lr=\cf7 1e-4\cf5 , weight_decay=\cf7 1e-7\cf5 , base_test_dir: \cf8 str \cf5 = \cf4 None\cf5 ,\
+          holdout_bases: \cf8 list \cf5 = \cf4 None\cf5 , out_dir: \cf8 str \cf5 = \cf4 None\cf5 , scheduler_type: \cf8 str \cf5 = \cf6 "step"\cf5 , step_size: \cf8 int \cf5 = \cf7 50\cf5 ,\
+          step_gamma: \cf8 float \cf5 = \cf7 0.5\cf5 , lambda_fn = \cf4 None\cf5 , log_every: \cf8 int \cf5 = \cf7 5\cf5 ):\
+    model.to(device)\
+\
+    \cf4 if \cf5 out_dir:\
+        os.makedirs(out_dir, \cf11 exist_ok \cf5 = \cf4 True\cf5 )\
+\
+    optimizer = torch.optim.AdamW(model.parameters(), \cf11 lr \cf5 = lr, \cf11 weight_decay \cf5 = weight_decay)\
+\
+    scheduler = \cf4 None\
+    if \cf5 scheduler_type \cf4 is not None\cf5 :\
+        stype = scheduler_type.lower()\
+        \cf4 if \cf5 stype == \cf6 "step"\cf5 :\
+            scheduler = StepLR(optimizer, \cf11 step_size\cf5 =step_size, \cf11 gamma\cf5 =step_gamma)\
+        \cf4 elif \cf5 stype == \cf6 "lambda"\cf5 :\
+            \cf4 if \cf5 lambda_fn \cf4 is None\cf5 :\
+                lambda_fn = (\cf4 lambda \cf5 ep: \cf7 0.5\cf5 *(\cf7 1 \cf5 + np.cos(np.pi*ep / \cf8 max\cf5 (\cf7 1\cf5 , epochs))))\
+            scheduler = LambdaLR(optimizer, \cf11 lr_lambda\cf5 =lambda_fn)\
+        \cf4 elif \cf5 stype == \cf6 "none"\cf5 :\
+            scheduler = \cf4 None\
+        else\cf5 :\
+            \cf4 raise \cf8 ValueError\cf5 (\cf6 f"Unknown scheduler_type: \cf4 \{\cf5 scheduler_type\cf4 \}\cf6 "\cf5 )\
+\
+    loss_history = []\
+    per_epoch_rows = []\
+\
+    \cf4 for \cf5 ep \cf4 in \cf8 range\cf5 (\cf7 1\cf5 , epochs + \cf7 1\cf5 ):\
+        model.train()\
+        losses = []\
+        \cf4 for \cf5 data_list \cf4 in \cf5 dataset_graphs:\
+            total_util = data_list[\cf7 0\cf5 ].total_util.to(device)\
+            phi_true = data_list[\cf7 0\cf5 ].phi.to(device).view(-\cf7 1\cf5 )\
+            N = phi_true.numel()\
+            scale = N/total_util\
+            phi_true_scaled = phi_true * scale\
+            phi_hat_scaled = model(data_list).view(-\cf7 1\cf5 )\
+            loss = F.mse_loss(phi_true_scaled, phi_hat_scaled, \cf11 reduction \cf5 = \cf6 "mean"\cf5 )\
+            optimizer.zero_grad(\cf11 set_to_none\cf5 =\cf4 True\cf5 )\
+            loss.backward()\
+            optimizer.step()\
+            losses.append(loss.detach())\
+\
+        \cf4 if \cf5 scheduler \cf4 is not None\cf5 :\
+            scheduler.step()\
+\
+        L = torch.stack(losses).mean()\
+        loss_history.append(L.item())\
+\
+        avg_mse = \cf4 None\
+        if \cf5 holdout_bases \cf4 and \cf5 base_test_dir:\
+            model.eval()\
+            \cf12 row \cf5 = \{\cf6 "epoch"\cf5 : ep\}\
+            \cf9 # with torch.no_grad():\
+            #     catalog = \{it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)\}\
+            #     mses = []\
+            #     for base in holdout_bases:\
+            #         if base not in catalog:\
+            #             continue\
+            #         p = catalog[base]\
+            #         # dl = load_and_preprocess(p['train_like'], p['test'], d = model.skip_lin.in_features)\
+            #         ## inject LOO\
+            #         dl = load_and_preprocess(p['train_like'], p['test'], d=svd_d)\
+            #         pred_scaled = model(dl).view(-1)\
+            #         phi_t = dl[0].phi.to(device).view(-1)\
+            #         total_util_t = dl[0].total_util.to(device)\
+            #         N_t = phi_t.numel()\
+            #         scale_t = (N_t/total_util_t)\
+            #         phi_t_scaled = phi_t * scale_t\
+            #         m = F.mse_loss(pred_scaled, phi_t_scaled, reduction='mean').item()\
+            #         row[base] = m\
+            #         mses.append(m)\
+            #     if mses:\
+            #         avg_mse = float(np.mean(mses))\
+            #         row['avg_mse'] = avg_mse\
+            #         per_epoch_rows.append(row)\
+\
+            ## To incorporate with injection of gradient info of LR\
+            \cf4 if \cf5 holdout_bases \cf4 and \cf5 base_test_dir:\
+                model.eval()\
+                row = \{\cf6 "epoch"\cf5 : ep\}\
+                catalog = \{it[\cf6 "base_name"\cf5 ]: it \cf4 for \cf5 it \cf4 in \cf5 discover_datasets(base_test_dir, \cf11 require_tmc \cf5 = \cf4 False\cf5 )\}\
+                mses = []\
+\
+                \cf4 for \cf5 base \cf4 in \cf5 holdout_bases:\
+                    \cf4 if \cf5 base \cf4 not in \cf5 catalog:\
+                        \cf4 continue\
+                    \cf5 p = catalog[base]\
+                    \cf9 ## Put LR outside of no_grad block to allow recording loss history\
+                    \cf5 dl = load_and_preprocess(p[\cf6 'train_like'\cf5 ], p[\cf6 'test'\cf5 ], \cf11 d\cf5 =svd_d)\
+                    \cf4 with \cf5 torch.no_grad():\
+                        pred_scaled = model(dl).view(-\cf7 1\cf5 )\
+                        phi_t = dl[\cf7 0\cf5 ].phi.to(device).view(-\cf7 1\cf5 )\
+                        total_util_t = dl[\cf7 0\cf5 ].total_util.to(device)\
+                        N_t = phi_t.numel()\
+                        phi_t_scaled = phi_t * (N_t / total_util_t)\
+                        m = F.mse_loss(pred_scaled, phi_t_scaled, \cf11 reduction\cf5 =\cf6 'mean'\cf5 ).item()\
+                    row[base] = m\
+                    mses.append(m)\
+\
+                \cf4 if \cf5 mses:\
+                    avg_mse = \cf8 float\cf5 (np.mean(mses))\
+                    row[\cf6 'avg_mse'\cf5 ] = avg_mse\
+                    per_epoch_rows.append(row)\
+        \cf9 # if (ep % 5 == 0) and (avg_mse is not None):\
+        #     print(f'Epoch \{ep:4d\} | Test avg MSE: \{avg_mse:.6e\}')  # *** CHANGED\
+        \cf4 if \cf5 (ep % log_every == \cf7 0\cf5 ) \cf4 or \cf5 (ep == \cf7 1\cf5 ) \cf4 or \cf5 (ep == epochs):\
+            \cf4 if \cf5 avg_mse \cf4 is None\cf5 :\
+                \cf8 print\cf5 (\cf6 f'Epoch \cf4 \{\cf5 ep\cf4 :\cf6 4d\cf4 \}\cf6  | Train MSE: \cf4 \{\cf5 L.item()\cf4 :\cf6 .10e\cf4 \}\cf6 '\cf5 )\
+            \cf4 else\cf5 :\
+                \cf8 print\cf5 (\cf6 f'Epoch \cf4 \{\cf5 ep\cf4 :\cf6 4d\cf4 \}\cf6  | Train MSE: \cf4 \{\cf5 L.item()\cf4 :\cf6 .10e\cf4 \}\cf6  | Test MSE: \cf4 \{\cf5 avg_mse\cf4 :\cf6 .10e\cf4 \}\cf6 '\cf5 )\
+\
+    \cf4 if \cf5 out_dir:\
+        xs = np.arange(\cf8 len\cf5 (loss_history))\
+        ys = np.array(loss_history)\
+        pd.DataFrame(\{\cf6 "epoch"\cf5 : xs + \cf7 1\cf5 , \cf6 "train_mse"\cf5 : ys\}).to_csv(os.path.join(out_dir, \cf6 "Training_MSE.csv"\cf5 ), \cf11 index \cf5 = \cf4 False\cf5 )\
+\
+        \cf4 if \cf5 per_epoch_rows:\
+            df_full = pd.DataFrame(per_epoch_rows)\
+            csv_full = os.path.join(out_dir, \cf6 "Holdout_MSE_Full.csv"\cf5 )\
+            df_full.to_csv(csv_full, \cf11 index \cf5 = \cf4 False\cf5 ); \cf8 print\cf5 (\cf6 "saved to:"\cf5 , csv_full)\
+\
+            df_train_full = pd.DataFrame(\{\cf6 "epoch"\cf5 : xs + \cf7 1\cf5 , \cf6 "train_mse"\cf5 : ys\})\
+            df_tt = df_full.merge(df_train_full, \cf11 on \cf5 = \cf6 "epoch"\cf5 , \cf11 how \cf5 = \cf6 "left"\cf5 )\
+            df_tt = df_tt[df_tt[\cf6 "epoch"\cf5 ] >= \cf7 20\cf5 ]\
+\
+            plt.figure(\cf11 figsize \cf5 = (\cf7 6\cf5 , \cf7 4\cf5 ))\
+            plt.plot(df_tt[\cf6 "epoch"\cf5 ], df_tt[\cf6 "avg_mse"\cf5 ], \cf11 label \cf5 = \cf6 "Test(avg MSE)"\cf5 , \cf11 linewidth \cf5 = \cf7 1.2\cf5 , \cf11 alpha \cf5 = \cf7 0.9\cf5 )\
+            plt.plot(df_tt[\cf6 "epoch"\cf5 ], df_tt[\cf6 "train_mse"\cf5 ], \cf11 label \cf5 = \cf6 "Train (MSE)"\cf5 , \cf11 linewidth \cf5 = \cf7 1.2\cf5 , \cf11 alpha \cf5 = \cf7 0.9\cf5 )\
+            plt.xlabel(\cf6 "Epoch"\cf5 )\
+            plt.ylabel(\cf6 "MSE"\cf5 )\
+            plt.title(\cf6 'Optimisation Curve of Training & Testing Sets (MSE)'\cf5 )\
+            plt.grid(\cf4 True\cf5 , \cf11 ls \cf5 = \cf6 '--'\cf5 , \cf11 alpha \cf5 = \cf7 0.5\cf5 )\
+            plt.legend()\
+            plt.tight_layout()\
+            plt.savefig(os.path.join(out_dir, \cf6 "Optimisation_Curve.png"\cf5 ))\
+            plt.close()\
+\
+            plt.figure(\cf11 figsize\cf5 =(\cf7 6\cf5 , \cf7 4\cf5 ))\
+            plt.plot(xs, np.log(ys + \cf7 1e-12\cf5 ), \cf11 label\cf5 =\cf6 'Training Loss (log)'\cf5 , \cf11 linewidth\cf5 =\cf7 1.2\cf5 , \cf11 alpha\cf5 =\cf7 0.9\cf5 )\
+            plt.xlabel(\cf6 'Epochs'\cf5 ); plt.ylabel(\cf6 'log(MSE)'\cf5 ); plt.title(\cf6 'Optimisation Curve(log)'\cf5 )\
+            plt.legend(); plt.grid(\cf4 True\cf5 , \cf11 ls\cf5 =\cf6 '--'\cf5 , \cf11 alpha\cf5 =\cf7 0.5\cf5 )\
+            plt.tight_layout(); plt.savefig(os.path.join(out_dir, \cf6 'Optimisation_Curve_log.png'\cf5 )); plt.close()\
+\
+    \cf4 return \cf5 loss_history\
+\
+\
+\cf6 '''\
+6. Prediction\
+'''\
+\cf4 def \cf10 predict\cf5 (model, data_list):\
+    model.eval()\
+    \cf4 with \cf5 torch.no_grad():\
+        yhat_scaled = model(data_list).view(-\cf7 1\cf5 )\
+        total_util = data_list[\cf7 0\cf5 ].total_util.to(yhat_scaled.device)\
+        N = data_list[\cf7 0\cf5 ].x.size(\cf7 0\cf5 )\
+        descaled = yhat_scaled * (total_util / N)\
+        \cf4 return \cf5 descaled.cpu().numpy()\
+\
+\
+\cf6 '''\
+7. Supplementary Functions\
+'''\
+\cf4 def \cf10 _ensure_dir\cf5 (p: \cf8 str\cf5 ):\
+    os.makedirs(p, \cf11 exist_ok\cf5 =\cf4 True\cf5 )\
+\
+\cf4 def \cf10 discover_datasets\cf5 (base_dir: \cf8 str\cf5 , require_tmc: \cf8 bool \cf5 = \cf4 False\cf5 ):\
+    TEST_RE = re.compile(\cf6 r"\cb15 ^(.+?)_test_(\\d+)(?:\\.[^.]+)?$\cb3 "\cf5 )\
+    TMC_RE = re.compile(\cf6 r"\cb15 ^(.+?)_TMC_(\\d+)(?:\\.[^.]+)?$\cb3 "\cf5 )\
+    TRAIN_RE = re.compile(\cf6 r"\cb15 ^(.+?)_(\\d+)(?:\\.[^.]+)?$\cb3 "\cf5 )\
+\
+    bucket = \{\}\
+    \cf4 for \cf5 fn \cf4 in \cf5 os.listdir(base_dir):\
+        base = fn\
+        path = os.path.join(base_dir, fn)\
+\
+        m = TEST_RE.match(base)\
+        \cf4 if \cf5 m:\
+            key = (m.group(\cf7 1\cf5 ), m.group(\cf7 2\cf5 ))\
+            bucket.setdefault(key, \{\})[\cf6 "test"\cf5 ] = path\
+            \cf4 continue\
+\
+        \cf5 m = TMC_RE.match(base)\
+        \cf4 if \cf5 m:\
+            key = (m.group(\cf7 1\cf5 ), m.group(\cf7 2\cf5 ))\
+            bucket.setdefault(key, \{\})[\cf6 "tmc"\cf5 ] = path\
+            \cf4 continue\
+\
+        if \cf5 TEST_RE.match(base) \cf4 or \cf5 TMC_RE.match(base):\
+            \cf4 continue\
+        \cf5 m = TRAIN_RE.match(base)\
+        \cf4 if \cf5 m:\
+            key = (m.group(\cf7 1\cf5 ), m.group(\cf7 2\cf5 ))\
+            bucket.setdefault(key, \{\})[\cf6 "train_like"\cf5 ] = path\
+            \cf4 continue\
+\
+    \cf5 result = []\
+    \cf4 for \cf5 key, paths \cf4 in \cf5 bucket.items():\
+        tr = paths.get(\cf6 "train_like"\cf5 ); te = paths.get(\cf6 "test"\cf5 ); tm = paths.get(\cf6 "tmc"\cf5 )\
+        \cf4 if \cf5 tr \cf4 and \cf5 te \cf4 and \cf5 (tm \cf4 or not \cf5 require_tmc):\
+            stem, idx = key\
+            base_name = \cf6 f"\cf4 \{\cf5 stem\cf4 \}\cf6 _\cf4 \{\cf5 idx\cf4 \}\cf6 "\
+            \cf5 result.append(\{\
+                \cf6 "key"\cf5 : key,\
+                \cf6 "base_name"\cf5 : base_name,\
+                \cf6 "train_like"\cf5 : tr,\
+                \cf6 "test"\cf5 : te,\
+                \cf6 "tmc"\cf5 : tm\
+            \})\
+        \cf4 else\cf5 :\
+            stem, idx = key\
+            want = []\
+            \cf4 if not \cf5 paths.get(\cf6 "train_like"\cf5 ): want.append(\cf6 "train_like"\cf5 )\
+            \cf4 if not \cf5 paths.get(\cf6 "test"\cf5 ):       want.append(\cf6 "test"\cf5 )\
+            \cf4 if \cf5 require_tmc \cf4 and not \cf5 paths.get(\cf6 "tmc"\cf5 ): want.append(\cf6 "tmc"\cf5 )\
+            \cf8 print\cf5 (\cf6 f"WARNING: Incomplete set for \cf4 \{\cf5 stem\cf4 \}\cf6 _\cf4 \{\cf5 idx\cf4 \}\cf6 : missing \cf4 \{\cf6 ', '\cf5 .join(want)\cf4 \}\cf6 "\cf5 )\
+    \cf4 return \cf5 result\
+\
+\cf4 def \cf10 print_adj_weights\cf5 (model):\
+    \cf4 with \cf5 torch.no_grad():\
+        \cf8 print\cf5 (\cf6 "\cf4 \\n\cf6 === Learned adjacency weights per c in C_List ==="\cf5 )\
+        \cf8 print\cf5 (\cf6 " idx | c | alpha  beta  w_feature  w_label"\cf5 )\
+        \cf4 for \cf5 i, c \cf4 in \cf8 enumerate\cf5 (C_List):\
+            a = model.alphas[i]; b = model.betas[i]\
+            probs = F.softmax(torch.stack([a, b]), \cf11 dim \cf5 = \cf7 0\cf5 )\
+            \cf8 print\cf5 (\cf6 f"\cf4 \{\cf5 i\cf4 :\cf6 >4d\cf4 \}\cf6  | \cf4 \{\cf5 c\cf4 :\cf6 <6\cf4 \}\cf6  | \cf4 \{\cf5 a.item()\cf4 :\cf6 <13.6f\cf4 \}  \{\cf5 b.item()\cf4 :\cf6 <13.6f\cf4 \}  \{\cf5 probs[\cf7 0\cf5 ].item()\cf4 :\cf6 <16.6f\cf4 \}  \{\cf5 probs[\cf7 1\cf5 ].item()\cf4 :\cf6 <16.6f\cf4 \}\cf6 "\cf5 )\
+        \cf8 print\cf5 ()\
+\
+COLORS = \{\cf6 "true"\cf5 : \cf6 "tab:blue"\cf5 , \cf6 "pred"\cf5 : \cf6 "tab:purple"\cf5 , \cf6 "tmc"\cf5 : \cf6 "tab:orange"\cf5 \}\
+\
+\cf4 def \cf10 _class_styles\cf5 (unique_labels):\
+    FILLED = [\cf6 'o'\cf5 ,\cf6 's'\cf5 ,\cf6 '^'\cf5 ,\cf6 'D'\cf5 ,\cf6 'P'\cf5 ,\cf6 '*'\cf5 ,\cf6 'v'\cf5 ,\cf6 '>'\cf5 ,\cf6 '<'\cf5 ,\cf6 'H'\cf5 ]\
+    it = cycle(FILLED)\
+    styles = \{\}\
+    \cf4 for \cf5 cls \cf4 in \cf8 sorted\cf5 (unique_labels):\
+        mk = \cf8 next\cf5 (it)\
+        styles[cls] = \cf8 dict\cf5 (\cf11 marker\cf5 =mk)\
+    \cf4 return \cf5 styles\
+\
+\cf4 def \cf10 diagnose_train_sets\cf5 (gnn, base_train_dir: \cf8 str\cf5 , out_dir: \cf8 str\cf5 , graph_dir: \cf8 str \cf5 = \cf4 None\cf5 ):\
+    _ensure_dir(out_dir)\
+    graph_dir = graph_dir \cf4 or \cf5 out_dir\
+    _ensure_dir(graph_dir)\
+\
+    triplets = discover_datasets(base_train_dir, \cf11 require_tmc\cf5 =\cf4 False\cf5 )\
+    \cf4 for \cf5 item \cf4 in \cf5 triplets:\
+        train_csv, test_csv = item[\cf6 "train_like"\cf5 ], item[\cf6 "test"\cf5 ]\
+        \cf9 # dlist = load_and_preprocess(train_csv, test_csv, d=gnn.skip_lin.in_features)\
+        \cf5 dlist = load_and_preprocess(train_csv, test_csv, \cf11 d\cf5 =svd_d)  \cf9 # use svd_d\
+        \cf5 preds = predict(gnn, dlist)\
+\
+        df_train = pd.read_csv(train_csv)\
+        df_train[\cf6 'Pred_Shap'\cf5 ] = preds\
+        base_name = os.path.basename(train_csv).replace(\cf6 '.csv'\cf5 ,\cf6 ''\cf5 )\
+        out_csv = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base_name\cf4 \}\cf6 _Pred.csv'\cf5 )\
+        df_train.to_csv(out_csv, \cf11 index \cf5 = \cf4 False\cf5 )\
+        \cf8 print\cf5 (\cf6 'Saved to:'\cf5 , out_csv)\
+\
+        true_vals = df_train[\cf6 'PerDShap'\cf5 ].to_numpy()\
+        \cf9 # true_vals = df_train['TrueDShap'].to_numpy()\
+        \cf5 pred_vals = df_train[\cf6 'Pred_Shap'\cf5 ].to_numpy()\
+        y_labels = (df_train[\cf6 'target'\cf5 ].to_numpy().astype(\cf8 int\cf5 ) \cf4 if \cf6 'target' \cf4 in \cf5 df_train.columns \cf4 else \cf5 np.zeros_like(true_vals))\
+        mean_true, mean_pred = true_vals.mean(), pred_vals.mean()\
+        N = \cf8 len\cf5 (true_vals); idx = np.arange(N); width = \cf7 0.25\
+\
+        \cf5 fig, (ax1, ax2) = plt.subplots(\cf7 1\cf5 , \cf7 2\cf5 , \cf11 figsize \cf5 = (\cf7 16\cf5 , \cf7 6\cf5 ))\
+\
+        \cf9 # --- Bar plot ---\
+        \cf5 ax1.bar(idx - width, true_vals, width, \cf11 label\cf5 =\cf6 'True Shapley'\cf5 , \cf11 color\cf5 =COLORS[\cf6 "true"\cf5 ],\
+                \cf11 edgecolor\cf5 =\cf6 'k'\cf5 , \cf11 alpha\cf5 =\cf7 0.7\cf5 )\
+        ax1.bar(idx + width, pred_vals, width, \cf11 label\cf5 =\cf6 'Predicted Shapley'\cf5 , \cf11 color\cf5 =COLORS[\cf6 "pred"\cf5 ],\
+                \cf11 edgecolor\cf5 =\cf6 'k'\cf5 , \cf11 alpha\cf5 =\cf7 0.7\cf5 )\
+        ax1.plot(idx, [mean_true]*N, \cf6 '--'\cf5 , \cf11 linewidth\cf5 =\cf7 2\cf5 , \cf11 color\cf5 =COLORS[\cf6 "true"\cf5 ], \cf11 label\cf5 =\cf6 f'Mean True: \cf4 \{\cf5 mean_true\cf4 :\cf6 .3f\cf4 \}\cf6 '\cf5 )\
+        ax1.plot(idx, [mean_pred]*N, \cf6 '--'\cf5 , \cf11 linewidth\cf5 =\cf7 2\cf5 , \cf11 color\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 label\cf5 =\cf6 f'Mean Pred: \cf4 \{\cf5 mean_pred\cf4 :\cf6 .3f\cf4 \}\cf6 '\cf5 )\
+        ax1.set_xlabel(\cf6 'Sample Index'\cf5 , \cf11 fontsize\cf5 =\cf7 12\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax1.set_ylabel(\cf6 'Shapley Value'\cf5 , \cf11 fontsize\cf5 =\cf7 12\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax1.set_title(\cf6 'Normalized True vs Predicted Shapley (Bar)'\cf5 , \cf11 fontsize\cf5 =\cf7 13\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax1.grid(\cf11 axis\cf5 =\cf6 'y'\cf5 , \cf11 linestyle\cf5 =\cf6 '--'\cf5 , \cf11 alpha\cf5 =\cf7 0.4\cf5 ); ax1.legend(\cf11 fontsize\cf5 =\cf7 10\cf5 )\
+\
+        \cf9 # --- Scatter ---\
+        \cf5 lo, hi = \cf8 min\cf5 (true_vals.min(), pred_vals.min()), \cf8 max\cf5 (true_vals.max(), pred_vals.max())\
+        pad = \cf7 0.005 \cf5 * (hi - lo \cf4 if \cf5 hi > lo \cf4 else \cf7 1.0\cf5 )\
+        ax2.set_xlim(lo - pad, hi + pad)\
+        ax2.set_ylim(lo - pad, hi + pad)\
+        ax2.set_aspect(\cf6 'equal'\cf5 , \cf11 adjustable\cf5 =\cf6 'box'\cf5 )\
+\
+        classes = np.unique(y_labels)\
+        styles = _class_styles(classes)\
+        \cf4 for \cf5 c \cf4 in \cf5 classes:\
+            mask = (y_labels == c)\
+            st = styles[c].copy()\
+            ax2.scatter(true_vals[mask], pred_vals[mask],\
+                        **st, \cf11 facecolors\cf5 =\cf6 'none'\cf5 , \cf11 edgecolors\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 linewidths\cf5 =\cf7 1.2\cf5 )\
+\
+        ax2.plot([lo, hi], [lo, hi], \cf6 '--k'\cf5 , \cf11 linewidth\cf5 =\cf7 1.5\cf5 )\
+        ax2.set_xlabel(\cf6 'True Shapley Values (normalized)'\cf5 , \cf11 fontsize\cf5 =\cf7 12\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax2.set_ylabel(\cf6 'Predicted Shapley Values'\cf5 , \cf11 fontsize\cf5 =\cf7 12\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax2.set_title(\cf6 'True vs Predicted (Scatter)'\cf5 , \cf11 fontsize\cf5 =\cf7 13\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        ax2.grid(\cf4 True\cf5 , \cf11 linestyle\cf5 =\cf6 '--'\cf5 , \cf11 alpha\cf5 =\cf7 0.4\cf5 )\
+\
+        class_handles = []\
+        \cf4 for \cf5 c \cf4 in \cf5 classes:\
+            st = styles[c]\
+            class_handles.append(\
+                Line2D([\cf7 0\cf5 ],[\cf7 0\cf5 ], \cf11 marker\cf5 =st[\cf6 'marker'\cf5 ], \cf11 linestyle\cf5 =\cf6 'None'\cf5 ,\
+                       \cf11 markerfacecolor\cf5 =\cf6 'none'\cf5 , \cf11 markeredgecolor\cf5 =\cf6 'k'\cf5 ,\
+                       \cf11 markersize\cf5 =\cf7 8\cf5 , \cf11 label\cf5 =\cf6 f'class \cf4 \{\cf5 c\cf4 \}\cf6 '\cf5 )\
+            )\
+        ax2.legend(\cf11 handles\cf5 =class_handles, \cf11 title\cf5 =\cf6 "Class (marker)"\cf5 , \cf11 fontsize\cf5 =\cf7 9\cf5 , \cf11 loc\cf5 =\cf6 'best'\cf5 )\
+\
+        fig.suptitle(\cf6 f'Shapley Comparison: \cf4 \{\cf5 os.path.basename(train_csv)\cf4 \}\cf6 '\cf5 , \cf11 fontsize\cf5 =\cf7 15\cf5 , \cf11 weight\cf5 =\cf6 'bold'\cf5 )\
+        plt.tight_layout(\cf11 rect\cf5 =[\cf7 0\cf5 , \cf7 0\cf5 , \cf7 1\cf5 , \cf7 0.96\cf5 ])\
+\
+        out_png = os.path.join(graph_dir, \cf6 f'\cf4 \{\cf5 base_name\cf4 \}\cf6 _ShapleyCompare.png'\cf5 )\
+        plt.savefig(out_png, \cf11 dpi\cf5 =\cf7 300\cf5 ); plt.close()\
+        \cf8 print\cf5 (\cf6 'Saved to:'\cf5 , out_png)\
+\
+\cf4 def \cf10 diagnose_test_sets\cf5 (gnn, base_test_dir: \cf8 str\cf5 , holdout_bases, out_dir: \cf8 str\cf5 , a = \cf7 0.05\cf5 , b = \cf7 0.40\cf5 ,\
+                      ylim = (\cf7 30\cf5 , \cf7 105\cf5 ), random_iters = \cf7 10\cf5 ):\
+    _ensure_dir(out_dir)\
+\
+    catalog = \{it[\cf6 "base_name"\cf5 ]: it \cf4 for \cf5 it \cf4 in \cf5 discover_datasets(base_test_dir, \cf11 require_tmc \cf5 = \cf4 False\cf5 )\}\
+    \cf4 for \cf5 base \cf4 in \cf5 holdout_bases:\
+        \cf4 if \cf5 base \cf4 not in \cf5 catalog:\
+            \cf8 print\cf5 (\cf6 f"WARNING: Base \cf4 \{\cf5 base\cf4 \}\cf6  not found in \cf4 \{\cf5 base_test_dir\cf4 \}\cf6 ."\cf5 )\
+            \cf4 continue\
+        \cf5 paths = catalog[base]\
+\
+        \cf9 # dlist = load_and_preprocess(paths["train_like"], paths["test"], d = gnn.skip_lin.in_features)\
+        ## Inject LOO\
+        \cf5 dlist = load_and_preprocess(paths[\cf6 'train_like'\cf5 ], paths[\cf6 'test'\cf5 ], \cf11 d\cf5 =svd_d)\
+        preds = predict(gnn, dlist)\
+\
+        df_tr_like = pd.read_csv(paths[\cf6 'train_like'\cf5 ])\
+        df_tr_like[\cf6 'Pred_Shap'\cf5 ] = preds\
+        out_pred_csv = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base\cf4 \}\cf6 _Pred.csv'\cf5 )\
+        df_tr_like.to_csv(out_pred_csv, \cf11 index \cf5 = \cf4 False\cf5 )\
+        \cf8 print\cf5 (\cf6 'Saved to:'\cf5 , out_pred_csv)\
+\
+        df_test = pd.read_csv(paths[\cf6 'test'\cf5 ])\
+        X_train = df_tr_like.drop(\cf11 columns\cf5 =[\cf6 'target'\cf5 ,\cf6 'PerDShap'\cf5 ,\cf6 'Pred_Shap'\cf5 ]).astype(\cf8 float\cf5 )\
+        \cf9 # X_train = df_tr_like.drop(columns=['target', 'TrueDShap', 'Pred_Shap']).astype(float)\
+        \cf5 X_test  = df_test.drop(\cf11 columns\cf5 =[\cf6 'target'\cf5 ]).astype(\cf8 float\cf5 )\
+        y_train = df_tr_like[\cf6 'target'\cf5 ].to_numpy().astype(\cf8 int\cf5 )\
+        y_test  = df_test[\cf6 'target'\cf5 ].to_numpy().astype(\cf8 int\cf5 )\
+\
+        \cf4 if \cf5 paths.get(\cf6 'tmc'\cf5 ) \cf4 is None\cf5 :\
+            \cf8 print\cf5 (\cf6 f"WARNING: No TMC file for \cf4 \{\cf5 base\cf4 \}\cf6 ."\cf5 )\
+            \cf4 continue\
+\
+        \cf5 df_tmc   = pd.read_csv(paths[\cf6 'tmc'\cf5 ])\
+        TMC_Shap = df_tmc[\cf6 'TMC_Shap'\cf5 ].to_numpy()\
+        Per_DShap = df_tr_like[\cf6 'PerDShap'\cf5 ].to_numpy()\
+        \cf9 # Per_DShap = df_tr_like['TrueDShap'].to_numpy()\
+        \cf5 Pred_Shap = preds\
+\
+        \cf9 # Removal plots\
+        \cf5 desc_png = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base\cf4 \}\cf6 _Removal_High.png'\cf5 )\
+        _ = PerformancePlot_Removal(\cf11 vals \cf5 = \{\cf6 'Permuted Data Shapley'\cf5 : Per_DShap, \cf6 'TMC Data Shapley'\cf5 : TMC_Shap, \cf6 'Predicted Shapley'\cf5 : Pred_Shap\},\
+                                    \cf11 X_train\cf5 =X_train.to_numpy(), \cf11 y_train\cf5 =y_train, \cf11 X_test\cf5 =X_test.to_numpy(), \cf11 y_test\cf5 =y_test,\
+                                    \cf11 a \cf5 = a, \cf11 b \cf5 = b, \cf11 ylim \cf5 = ylim, \cf11 order \cf5 = \cf6 'descending'\cf5 , \cf11 random_iters \cf5 = random_iters, \cf11 save_path\cf5 =desc_png)\
+        \cf8 print\cf5 (\cf6 'Saved to:'\cf5 , desc_png)\
+\
+        asc_png = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base\cf4 \}\cf6 _Removal_Low.png'\cf5 )\
+        _ = PerformancePlot_Removal(\cf11 vals \cf5 = \{\cf6 'Permuted Data Shapley'\cf5 : Per_DShap, \cf6 'TMC Data Shapley'\cf5 : TMC_Shap, \cf6 'Predicted Shapley'\cf5 : Pred_Shap\},\
+                                    \cf11 X_train\cf5 =X_train.to_numpy(), \cf11 y_train\cf5 =y_train, \cf11 X_test\cf5 =X_test.to_numpy(), \cf11 y_test\cf5 =y_test,\
+                                    \cf11 a \cf5 = a, \cf11 b \cf5 = b, \cf11 ylim \cf5 = ylim, \cf11 order\cf5 =\cf6 'ascending'\cf5 , \cf11 random_iters\cf5 =random_iters, \cf11 save_path \cf5 = asc_png)\
+        \cf8 print\cf5 (\cf6 'Saved to'\cf5 , asc_png)\
+\
+        \cf9 # Bar comparison\
+        \cf5 tmc_vals  = np.asarray(TMC_Shap)\
+        per_vals  = np.asarray(Per_DShap)\
+        pred_vals = np.asarray(Pred_Shap)\
+        mean_tmc, mean_per, mean_pred = tmc_vals.mean(), per_vals.mean(), pred_vals.mean()\
+        N = \cf8 len\cf5 (per_vals); idx = np.arange(N); width = \cf7 0.27\
+\
+        \cf5 plt.figure(\cf11 figsize\cf5 =(\cf7 11\cf5 ,\cf7 6\cf5 ))\
+        plt.bar(idx - width, per_vals,  width, \cf11 label\cf5 =\cf6 'Permuted Shapley'\cf5 , \cf11 color\cf5 =COLORS[\cf6 "true"\cf5 ], \cf11 edgecolor\cf5 =\cf6 'k'\cf5 , \cf11 alpha\cf5 =\cf7 0.7\cf5 )\
+        plt.bar(idx,          tmc_vals, width, \cf11 label\cf5 =\cf6 'TMC Shapley'\cf5 ,      \cf11 color\cf5 =COLORS[\cf6 "tmc"\cf5 ], \cf11 edgecolor\cf5 =\cf6 'k'\cf5 , \cf11 alpha\cf5 =\cf7 0.7\cf5 )\
+        plt.bar(idx + width,  pred_vals, width, \cf11 label\cf5 =\cf6 'Predicted Shapley'\cf5 , \cf11 color\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 edgecolor\cf5 =\cf6 'k'\cf5 , \cf11 alpha\cf5 =\cf7 0.7\cf5 )\
+        plt.plot(idx, [mean_per]*N,  \cf6 '--'\cf5 , \cf11 linewidth\cf5 =\cf7 2\cf5 , \cf11 color\cf5 =COLORS[\cf6 "true"\cf5 ], \cf11 label\cf5 =\cf6 f'Avg Permuted (\cf4 \{\cf5 mean_per\cf4 :\cf6 .3f\cf4 \}\cf6 )'\cf5 )\
+        plt.plot(idx, [mean_tmc]*N,  \cf6 '--'\cf5 , \cf11 linewidth\cf5 =\cf7 2\cf5 , \cf11 color\cf5 =COLORS[\cf6 "tmc"\cf5 ],  \cf11 label\cf5 =\cf6 f'Avg TMC (\cf4 \{\cf5 mean_tmc\cf4 :\cf6 .3f\cf4 \}\cf6 )'\cf5 )\
+        plt.plot(idx, [mean_pred]*N, \cf6 '--'\cf5 , \cf11 linewidth\cf5 =\cf7 2\cf5 , \cf11 color\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 label\cf5 =\cf6 f'Avg Pred (\cf4 \{\cf5 mean_pred\cf4 :\cf6 .3f\cf4 \}\cf6 )'\cf5 )\
+        plt.xlabel(\cf6 'Sample Index'\cf5 ); plt.ylabel(\cf6 'Shapley Value'\cf5 )\
+        plt.title(\cf6 f'Comparison of Shapley Values \'97 \cf4 \{\cf5 base\cf4 \}\cf6 '\cf5 )\
+        plt.grid(\cf11 axis\cf5 =\cf6 'y'\cf5 , \cf11 linestyle\cf5 =\cf6 '--'\cf5 , \cf11 alpha\cf5 =\cf7 0.4\cf5 ); plt.legend(); plt.tight_layout()\
+        bar_png = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base\cf4 \}\cf6 _ShapleyCompare.png'\cf5 )\
+        plt.savefig(bar_png, \cf11 dpi\cf5 =\cf7 500\cf5 ); plt.close()\
+        \cf8 print\cf5 (\cf6 'saved \uc0\u10140 '\cf5 , bar_png)\
+\
+        \cf9 # Linear comparison\
+        \cf5 lo = \cf8 min\cf5 (per_vals.min(), tmc_vals.min(), pred_vals.min())\
+        hi = \cf8 max\cf5 (per_vals.max(), tmc_vals.max(), pred_vals.max())\
+\
+        classes = np.unique(y_train)\
+        styles = _class_styles(classes)\
+\
+        fig, ax = plt.subplots(\cf11 figsize\cf5 =(\cf7 8.8\cf5 , \cf7 8.8\cf5 ))\
+        \cf4 for \cf5 c \cf4 in \cf5 classes:\
+            mask = (y_train == c)\
+            st = styles[c].copy()\
+            ax.scatter(per_vals[mask], pred_vals[mask], **st, \cf11 facecolors\cf5 =\cf6 'none'\cf5 , \cf11 edgecolors\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 linewidths\cf5 =\cf7 1.2\cf5 )\
+            ax.scatter(per_vals[mask], tmc_vals[mask],  **st, \cf11 facecolors\cf5 =\cf6 'none'\cf5 , \cf11 edgecolors\cf5 =COLORS[\cf6 "tmc"\cf5 ],  \cf11 linewidths\cf5 =\cf7 1.2\cf5 )\
+\
+        ax.plot([lo - \cf7 0.001\cf5 , hi + \cf7 0.001\cf5 ], [lo - \cf7 0.001\cf5 , hi + \cf7 0.001\cf5 ], \cf6 '--k'\cf5 , \cf11 linewidth\cf5 =\cf7 1.5\cf5 )\
+        ax.set_xlabel(\cf6 'Permuted Shapley Value'\cf5 ); ax.set_ylabel(\cf6 'Other Shapley Values'\cf5 )\
+        ax.set_title(\cf6 f'Linear Comparison \'97 \cf4 \{\cf5 base\cf4 \}\cf6 '\cf5 )\
+        ax.grid(\cf4 True\cf5 , \cf11 linestyle\cf5 =\cf6 '--'\cf5 , \cf11 alpha\cf5 =\cf7 0.5\cf5 )\
+\
+        series_handles = [\
+            Line2D([\cf7 0\cf5 ],[\cf7 0\cf5 ], \cf11 marker\cf5 =\cf6 'o'\cf5 , \cf11 linestyle\cf5 =\cf6 'None'\cf5 , \cf11 markerfacecolor\cf5 =\cf6 'none'\cf5 , \cf11 markeredgecolor\cf5 =COLORS[\cf6 "pred"\cf5 ], \cf11 markersize\cf5 =\cf7 8\cf5 , \cf11 label\cf5 =\cf6 'Predicted Shapley'\cf5 ),\
+            Line2D([\cf7 0\cf5 ],[\cf7 0\cf5 ], \cf11 marker\cf5 =\cf6 'o'\cf5 , \cf11 linestyle\cf5 =\cf6 'None'\cf5 , \cf11 markerfacecolor\cf5 =\cf6 'none'\cf5 , \cf11 markeredgecolor\cf5 =COLORS[\cf6 "tmc"\cf5 ],  \cf11 markersize\cf5 =\cf7 8\cf5 , \cf11 label\cf5 =\cf6 'TMC Shapley'\cf5 ),\
+        ]\
+        legend_series = ax.legend(\cf11 handles\cf5 =series_handles, \cf11 title\cf5 =\cf6 "Series (color)"\cf5 , \cf11 loc\cf5 =\cf6 'upper left'\cf5 , \cf11 fontsize\cf5 =\cf7 9\cf5 )\
+        ax.add_artist(legend_series)\
+\
+        class_handles = []\
+        \cf4 for \cf5 c \cf4 in \cf5 classes:\
+            st = styles[c]\
+            class_handles.append(\
+                Line2D([\cf7 0\cf5 ],[\cf7 0\cf5 ], \cf11 marker\cf5 =st[\cf6 'marker'\cf5 ], \cf11 linestyle\cf5 =\cf6 'None'\cf5 ,\
+                       \cf11 markerfacecolor\cf5 =\cf6 'none'\cf5 , \cf11 markeredgecolor\cf5 =\cf6 'k'\cf5 , \cf11 markersize\cf5 =\cf7 8\cf5 , \cf11 label\cf5 =\cf6 f'class \cf4 \{\cf5 c\cf4 \}\cf6 '\cf5 )\
+            )\
+        legend_classes = ax.legend(\cf11 handles\cf5 =class_handles, \cf11 title\cf5 =\cf6 "Class (marker)"\cf5 , \cf11 loc\cf5 =\cf6 'lower right'\cf5 , \cf11 fontsize\cf5 =\cf7 9\cf5 )\
+        ax.add_artist(legend_classes)\
+\
+        plt.tight_layout()\
+        line_png = os.path.join(out_dir, \cf6 f'\cf4 \{\cf5 base\cf4 \}\cf6 _LinearCompare.png'\cf5 )\
+        plt.savefig(line_png, \cf11 dpi\cf5 =\cf7 500\cf5 ); plt.close()\
+        \cf8 print\cf5 (\cf6 'Saved to:'\cf5 , line_png)\
+\
+\cf4 def \cf10 train_then_diagnose\cf5 (BASE_TRAIN: \cf8 str\cf5 , BASE_TEST: \cf8 str\cf5 , OUT_DIR: \cf8 str\cf5 , holdout_bases,\
+                        in_channels = svd_d, hidden_channels = \cf7 256\cf5 , heads = \cf7 8\cf5 ,\
+                        epochs = \cf7 500\cf5 , lr = \cf7 1e-4\cf5 , \cf12 weight_decay = 1e-7\cf5 ,\
+                        a = \cf7 0.05\cf5 , b = \cf7 0.40\cf5 , ylim = (\cf7 40\cf5 , \cf7 105\cf5 ), random_iters = \cf7 10\cf5 ,\
+                        scheduler_type=\cf6 "step"\cf5 , step_size=\cf7 50\cf5 , step_gamma=\cf7 0.5\cf5 , lambda_fn=\cf4 None\cf5 ):\
+    _ensure_dir(OUT_DIR)\
+\
+    triplets = discover_datasets(BASE_TRAIN, \cf11 require_tmc \cf5 = \cf4 False\cf5 )\
+    dataset_graphs = [load_and_preprocess(it[\cf6 "train_like"\cf5 ], it[\cf6 "test"\cf5 ], \cf11 d \cf5 = svd_d) \cf4 for \cf5 it \cf4 in \cf5 triplets]\
+\
+    gnn = GINShap(\cf11 in_channels \cf5 = in_channels, \cf11 hidden_channels \cf5 = hidden_channels, \cf11 heads \cf5 = heads)\
+    _ = train(gnn, dataset_graphs, \cf11 epochs\cf5 =epochs, \cf11 lr\cf5 =lr,\
+              \cf11 base_test_dir\cf5 =BASE_TEST, \cf11 holdout_bases\cf5 =holdout_bases, \cf11 out_dir\cf5 =OUT_DIR,\
+              \cf11 scheduler_type\cf5 =scheduler_type, \cf11 step_size\cf5 =step_size, \cf11 step_gamma\cf5 =step_gamma, \cf11 lambda_fn\cf5 =lambda_fn)\
+\
+    train_dir = os.path.join(OUT_DIR, \cf6 "diagnostics_train_final"\cf5 ); _ensure_dir(train_dir)\
+    diagnose_train_sets(gnn, \cf11 base_train_dir\cf5 =BASE_TRAIN, \cf11 out_dir\cf5 =train_dir, \cf11 graph_dir\cf5 =train_dir)\
+\
+    test_dir  = os.path.join(OUT_DIR, \cf6 "diagnostics_test_final"\cf5 );  _ensure_dir(test_dir)\
+    diagnose_test_sets(gnn, \cf11 base_test_dir\cf5 =BASE_TEST, \cf11 holdout_bases\cf5 =holdout_bases,\
+                       \cf11 out_dir\cf5 =test_dir, \cf11 a\cf5 =a, \cf11 b\cf5 =b, \cf11 ylim\cf5 =ylim, \cf11 random_iters\cf5 =random_iters)\
+    \cf4 return \cf5 gnn\
+\
+\
+\cf9 #####################################################################################################\
+#####################################################################################################\
+########################################  Experiments ###############################################\
+\
+\cf4 if \cf5 __name__ == \cf6 "__main__"\cf5 :\
+    BASE_TRAIN = \cf6 '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'\
+    \cf5 BASE_TEST  = \cf6 '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'\
+    \cf5 OUT_DIR    = \cf6 '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/251226/Trial01'\
+    \cf5 HOLDOUTS   = [\cf6 'Iris_1'\cf5 , \cf6 'Vehicle_01_1'\cf5 , \cf6 'characters_048_1'\cf5 ]\
+\
+    _ = train_then_diagnose(\
+        BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,\
+        \cf11 in_channels\cf5 =FEAT_DIM, \cf11 hidden_channels\cf5 =\cf7 64\cf5 , \cf11 heads\cf5 =\cf7 2\cf5 ,\
+        \cf11 epochs\cf5 =\cf7 700\cf5 , \cf11 lr\cf5 =\cf7 1e-5\cf5 , \cf11 weight_decay\cf5 =\cf7 1e-7\cf5 ,\
+        \cf11 scheduler_type\cf5 =\cf6 "None"\cf5 , \cf11 step_size\cf5 =\cf7 50\cf5 , \cf11 step_gamma \cf5 = \cf7 0.5\
+    \cf5 )\
+\
+\cf9 # if __name__ == "__main__":\
+#     BASE_TRAIN = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Train'\
+#     BASE_TEST  = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Test'\
+#     OUT_DIR    = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251130/Trial01'\
+#     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'Vehicle_1']\
+#         # , 'CIFAR10_19xxx_2', 'FashionMNIST_0469x_1', 'MNIST_89xxx_21']\
+#\
+#     _ = train_then_diagnose(\
+#         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,\
+#         in_channels=100, hidden_channels=128, heads=4,\
+#         epochs=1000, lr=1e-5, weight_decay=1e-7,\
+#         scheduler_type="None", step_size=50, step_gamma = 0.5\
+#     )\
+\
+# if __name__ == "__main__":\
+#     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Train'\
+#     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Test'\
+#     OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/251103/Trial04'\
+#     HOLDOUTS   = ['Iris_1', 'MNIST_369xx_20', 'MNIST_459xx_22', 'MNIST_89xxx_21']\
+#\
+#     _ = train_then_diagnose(\
+#         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,\
+#         in_channels=100, hidden_channels=128, heads=4,\
+#         epochs=1000, lr=5e-5, weight_decay=1e-7,\
+#         scheduler_type="step", step_size=50, step_gamma=0.5\
+#     )\
+\
+}
