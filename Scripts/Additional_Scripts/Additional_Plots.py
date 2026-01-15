@@ -758,3 +758,397 @@ line_png = os.path.join(OUT_DIR, "MNIST_369xx_20_LinearCompare.png")
 plt.savefig(line_png, dpi=500)
 plt.close()
 print("Saved linear comparison to:", line_png)
+
+
+'''
+260112. Histogram of Shapley values
+'''
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+
+
+'1. Characters'
+CSV_PATH = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/characters_048_1'
+df = pd.read_csv(CSV_PATH)
+x = np.arange(len(df))
+y = df['PerDShap'].to_numpy()
+
+## Histogram
+plt.figure(figsize=(12, 8))
+plt.hist(y, bins=50)
+plt.xlabel("PerDShap Values")
+plt.ylabel("Count")
+plt.title("Histogram of PerDShap")
+plt.tight_layout()
+plt.show()
+
+## Scatter plot
+X = df.drop(columns=["PerDShap", "target"])
+y = df["target"].to_numpy()                 # class labels (should be 3 unique values)
+per = df["PerDShap"].to_numpy(dtype=float)
+
+# PCA
+Xz = StandardScaler().fit_transform(X.to_numpy(dtype=float))
+Z = PCA(n_components=2, random_state=0).fit_transform(Xz)
+
+# sizes from |PerDShap|
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+s_min, s_max = 10.0, 250.0
+sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float) if np.allclose(mag.max(), mag.min()) \
+    else s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---- force exactly K discrete colors ----
+classes = np.unique(y)
+K = len(classes)
+print("Unique classes:", classes, "K =", K)
+
+# map labels -> 0..K-1
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+# discrete colormap + boundary norm (no interpolation)
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("PC1")
+plt.ylabel("PC2")
+plt.title("PCA scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+# legend (exactly K entries)
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title="target", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()
+
+## t-SNE
+TARGET_COL = "target"
+PERDSHAP_COL = "PerDShap"
+X = df.drop(columns=[PERDSHAP_COL, TARGET_COL]).to_numpy(dtype=float)
+y = df[TARGET_COL].to_numpy()
+per = df[PERDSHAP_COL].to_numpy(dtype=float)
+
+# ---------------------------
+# Size mapping: |PerDShap| -> marker area (robust)
+# ---------------------------
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+
+s_min, s_max = 10.0, 250.0
+if np.allclose(mag.max(), mag.min()):
+    sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float)
+else:
+    sizes = s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---------------------------
+# Standardize then t-SNE to 2D
+# ---------------------------
+Xz = StandardScaler().fit_transform(X)
+Z = TSNE(
+    n_components=2,
+    perplexity=10,
+    learning_rate="auto",
+    init="pca",
+    random_state=0
+).fit_transform(Xz)
+
+# ---------------------------
+# Discrete colors: target -> {0,...,K-1}
+# ---------------------------
+classes = np.unique(y)
+K = len(classes)
+
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+# ---------------------------
+# Plot
+# ---------------------------
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("t-SNE 1")
+plt.ylabel("t-SNE 2")
+plt.title("t-SNE scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title=TARGET_COL, bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()
+
+'2. Iris'
+CSV_PATH = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Iris_1'
+df = pd.read_csv(CSV_PATH)
+x = np.arange(len(df))
+y = df['PerDShap'].to_numpy()
+
+plt.figure(figsize=(12, 8))
+plt.hist(y, bins=50)
+plt.xlabel("PerDShap Values")
+plt.ylabel("Count")
+plt.title("Histogram of PerDShap")
+plt.tight_layout()
+plt.show()
+
+X = df.drop(columns=["PerDShap", "target"])
+y = df["target"].to_numpy()                 # class labels (should be 3 unique values)
+per = df["PerDShap"].to_numpy(dtype=float)
+
+# PCA
+Xz = StandardScaler().fit_transform(X.to_numpy(dtype=float))
+Z = PCA(n_components=2, random_state=0).fit_transform(Xz)
+
+# sizes from |PerDShap|
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+s_min, s_max = 10.0, 250.0
+sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float) if np.allclose(mag.max(), mag.min()) \
+    else s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---- force exactly K discrete colors ----
+classes = np.unique(y)
+K = len(classes)
+print("Unique classes:", classes, "K =", K)
+
+# map labels -> 0..K-1
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+# discrete colormap + boundary norm (no interpolation)
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("PC1")
+plt.ylabel("PC2")
+plt.title("PCA scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+# legend (exactly K entries)
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title="target", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()
+
+## t-SNE
+TARGET_COL = "target"
+PERDSHAP_COL = "PerDShap"
+X = df.drop(columns=[PERDSHAP_COL, TARGET_COL]).to_numpy(dtype=float)
+y = df[TARGET_COL].to_numpy()
+per = df[PERDSHAP_COL].to_numpy(dtype=float)
+
+# ---------------------------
+# Size mapping: |PerDShap| -> marker area (robust)
+# ---------------------------
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+
+s_min, s_max = 10.0, 250.0
+if np.allclose(mag.max(), mag.min()):
+    sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float)
+else:
+    sizes = s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---------------------------
+# Standardize then t-SNE to 2D
+# ---------------------------
+Xz = StandardScaler().fit_transform(X)
+Z = TSNE(
+    n_components=2,
+    perplexity=30,
+    learning_rate="auto",
+    init="pca",
+    random_state=0
+).fit_transform(Xz)
+
+# ---------------------------
+# Discrete colors: target -> {0,...,K-1}
+# ---------------------------
+classes = np.unique(y)
+K = len(classes)
+
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+# ---------------------------
+# Plot
+# ---------------------------
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("t-SNE 1")
+plt.ylabel("t-SNE 2")
+plt.title("t-SNE scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title=TARGET_COL, bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()
+
+
+
+'3. Vehicle'
+CSV_PATH = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Vehicle_01_1'
+df = pd.read_csv(CSV_PATH)
+x = np.arange(len(df))
+y = df['PerDShap'].to_numpy()
+
+plt.figure(figsize=(12, 8))
+plt.hist(y, bins=50)
+plt.xlabel("PerDShap Values")
+plt.ylabel("Count")
+plt.title("Histogram of PerDShap")
+plt.tight_layout()
+plt.show()
+
+X = df.drop(columns=["PerDShap", "target"])
+y = df["target"].to_numpy()                 # class labels (should be 3 unique values)
+per = df["PerDShap"].to_numpy(dtype=float)
+
+# PCA
+Xz = StandardScaler().fit_transform(X.to_numpy(dtype=float))
+Z = PCA(n_components=2, random_state=0).fit_transform(Xz)
+
+# sizes from |PerDShap|
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+s_min, s_max = 10.0, 250.0
+sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float) if np.allclose(mag.max(), mag.min()) \
+    else s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---- force exactly K discrete colors ----
+classes = np.unique(y)
+K = len(classes)
+print("Unique classes:", classes, "K =", K)
+
+# map labels -> 0..K-1
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+# discrete colormap + boundary norm (no interpolation)
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("PC1")
+plt.ylabel("PC2")
+plt.title("PCA scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+# legend (exactly K entries)
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title="target", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()
+
+## t-SNE
+TARGET_COL = "target"
+PERDSHAP_COL = "PerDShap"
+X = df.drop(columns=[PERDSHAP_COL, TARGET_COL]).to_numpy(dtype=float)
+y = df[TARGET_COL].to_numpy()
+per = df[PERDSHAP_COL].to_numpy(dtype=float)
+
+# ---------------------------
+# Size mapping: |PerDShap| -> marker area (robust)
+# ---------------------------
+mag = np.abs(per)
+q1, q99 = np.quantile(mag, [0.01, 0.99])
+mag = np.clip(mag, q1, q99)
+
+s_min, s_max = 10.0, 250.0
+if np.allclose(mag.max(), mag.min()):
+    sizes = np.full_like(mag, (s_min + s_max) / 2.0, dtype=float)
+else:
+    sizes = s_min + (mag - mag.min()) * (s_max - s_min) / (mag.max() - mag.min())
+
+# ---------------------------
+# Standardize then t-SNE to 2D
+# ---------------------------
+Xz = StandardScaler().fit_transform(X)
+Z = TSNE(
+    n_components=2,
+    perplexity=30,
+    learning_rate="auto",
+    init="pca",
+    random_state=0
+).fit_transform(Xz)
+
+# ---------------------------
+# Discrete colors: target -> {0,...,K-1}
+# ---------------------------
+classes = np.unique(y)
+K = len(classes)
+
+class_to_int = {c: i for i, c in enumerate(classes)}
+c_int = np.array([class_to_int[v] for v in y], dtype=int)
+
+cmap = ListedColormap(plt.get_cmap("tab10").colors[:K])
+norm = BoundaryNorm(np.arange(-0.5, K + 0.5, 1), K)
+
+# ---------------------------
+# Plot
+# ---------------------------
+plt.figure(figsize=(7.5, 6))
+sc = plt.scatter(Z[:, 0], Z[:, 1], c=c_int, s=sizes, alpha=0.75, cmap=cmap, norm=norm)
+
+plt.xlabel("t-SNE 1")
+plt.ylabel("t-SNE 2")
+plt.title("t-SNE scatter: color=target (discrete), size=|PerDShap|")
+plt.tight_layout()
+
+handles = [
+    plt.Line2D([0], [0], marker="o", linestyle="", markersize=8,
+               label=str(cls), markerfacecolor=cmap(i), markeredgecolor="none")
+    for i, cls in enumerate(classes)
+]
+plt.legend(handles=handles, title=TARGET_COL, bbox_to_anchor=(1.02, 1), loc="upper left")
+
+plt.show()

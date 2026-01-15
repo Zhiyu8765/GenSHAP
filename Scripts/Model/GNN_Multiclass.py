@@ -2,7 +2,7 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import re
 import dgl
 import torch
@@ -17,7 +17,7 @@ from itertools import cycle
 from dgl.nn.pytorch.conv import GINConv
 from torch_geometric.data import Data
 from torch.optim.lr_scheduler import StepLR, LambdaLR
-from torch.nn import (Sequential, Linear, LeakyReLU, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)
+from torch.nn import (Sequential, Linear, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)
 from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.linear_model import LogisticRegression
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
@@ -30,7 +30,7 @@ if torch.cuda.is_available():
     print("Current device:", torch.cuda.current_device())
     print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
 
-'On CPU'
+## 'On CPU'
 # device = torch.device("cpu")
 # print("CUDA available:", torch.cuda.is_available())
 # print("Using device:", device)
@@ -83,27 +83,9 @@ def flip_pe_sign(x, method='sum'):
     sign = torch.sign(diff)
     return x * sign
 
+'SVD'
 svd_d = 100
-# FEAT_DIM = svd_d
-## Injection of LOO
-# FEAT_DIM = svd_d + 1
-## Injection of gradient norm and error
-# FEAT_DIM = svd_d + 3
-## Injection of LOO + grad norm + grad error + Local distance-skewness
-# FEAT_DIM = svd_d + 4
-## Injection of other row statistics (mean, var, min, max, skewness, kurtosis)
-# FEAT_DIM = svd_d + 9
-## Injection of statistics on loss history
-# FEAT_DIM = svd_d + 15
-## Injection of time series loss
-# FEAT_DIM = svd_d + 109
-## Injection of loss history (per 10 epoch)
-# FEAT_DIM = svd_d + 19
-# ## Injection of KNN's total accuracy (k = 5, 10, 100)
-# FEAT_DIM = svd_d + 22
-## Injection of inclusion frequency
-FEAT_DIM = svd_d + 25
-
+FEAT_DIM = svd_d + 9
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -121,24 +103,13 @@ def SVD_Transform(A, d = svd_d):
 '''
 C_List = [0.25, 0.5, 1, 2, 4, 8]
 
-def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z, loss_stats_z, knn_acc_z, inc_freq_z, d=svd_d):
+def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z, d=svd_d):
     D = pairwise_distances(X_raw, metric='euclidean')
-    # D = pairwise_distances(X_raw, metric='manhattan')
     ## Gaussian Kernel
     sigma = np.mean(D)
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2))
-    ### Laplace Kernel
-    # sigma = np.mean(D)
-    # eps = 1e-12
-    # A = np.exp(-D / (c * sigma + eps))
-    ## Student t kernel
-    # sigma = np.mean(D)
-    # nu = 1.0
-    # eps = 1e-12
-    # scale2 = (c * sigma + eps) ** 2
-    # A = (1.0 + (D ** 2) / (nu * scale2)) ** (-(nu + 2.0) / 2.0)
 
-    ## Injection of Local Distance Skewness
+    ## Injection of statistics(mean, var, min, max, skewness, kurtosis) of each row
     def _standardize(arr):
         mu = arr.mean()
         std = arr.std()
@@ -162,12 +133,6 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
         s4 = (s2 + eps) ** 2
         return np.mean(c ** 4) / s4 - 3.0
 
-    # # Injection of skewness (treat each row as random samples from one distribution)
-    # Xr = np.asarray(X_raw, dtype=float)
-    # skew_feat = np.array([_skewness_1d(Xr[i]) for i in range(Xr.shape[0])], dtype=float)  # (N,)
-    # skew_dist_z = _standardize(skew_feat)  # (N,)
-
-    # Injection of more statistics
     Xr = np.asarray(X_raw, dtype=float)
     row_mean = Xr.mean(axis=1)
     row_var = Xr.var(axis=1)
@@ -183,9 +148,6 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     y = np.asarray(y_raw).ravel()
     A_y = (y[:, None] == y[None, :]).astype(float)
 
-    # # Injection of LOO (standardised)
-    # loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)
-    # X_node = np.concatenate([X_svd, loo_z], axis=1)  # (N, svd_d + 1)
 
     ## Injection of LOO + Gradient Norm + Grad Error
     loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)
@@ -193,23 +155,8 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     grad_err_z = np.asarray(grad_err_z).reshape(-1, 1)  # (N, 1)
 
     ## weight on injected features
-    weight_extra = 1.0
-    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z], axis=1)  # (N, 3)
-    # extra_feats *= weight_extra
-    # X_node = np.concatenate([X_svd, extra_feats], axis=1)  # (N, svd_d + 3)
-    ## Injection of LOO + Gradient Norm + Grad Error + Local distance-skewness
-    # skew_dist_z = np.asarray(skew_dist_z).reshape(-1, 1)
-    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, skew_dist_z], axis=1)
-    # ## Injection of row statistics
-    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z], axis=1)  # (N, 19) when injecting loss history per 10 epochs; (N, 109) when using time series loss, (N, 9) when using loss statistics
-    # extra_feats *= weight_extra
-    ## Injection of KNN's whole accuracy
-    # knn_acc_z = np.asarray(knn_acc_z)
-    # extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z, knn_acc_z], axis = 1)
-    # extra_feats *= weight_extra
-    ## Injection of inclusion frequency
-    inc_freq_z = np.asarray(inc_freq_z)
-    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, loss_stats_z, knn_acc_z, inc_freq_z], axis=1)
+    weight_extra = 3.0
+    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z], axis=1)  # (N, 9)
     extra_feats *= weight_extra
     X_node = np.concatenate([X_svd, extra_feats], axis=1)
 
@@ -217,24 +164,15 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
-    edge_index = torch.tensor(
-        np.concatenate([eidx, eidx[::-1]], axis=1),
-        dtype=torch.long, device=device
-    )
+    edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis=1), dtype=torch.long, device=device)
 
     w_feat = A[src, dst]
     w_label = A_y[src, dst]
-    edge_attr_feat = torch.tensor(
-        np.concatenate([w_feat, w_feat]),
-        dtype=torch.float, device=device
-    ).unsqueeze(1)
-    edge_attr_label = torch.tensor(
-        np.concatenate([w_label, w_label]),
-        dtype=torch.float, device=device
-    ).unsqueeze(1)
+    edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype=torch.float, device=device).unsqueeze(1)
+    edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype=torch.float, device=device).unsqueeze(1)
 
     data = Data(
-        x=torch.tensor(X_node, dtype=torch.float, device=device),  # use X_node
+        x=torch.tensor(X_node, dtype=torch.float, device=device),
         edge_index=edge_index,
         edge_attr_feat=edge_attr_feat,
         edge_attr_label=edge_attr_label
@@ -252,220 +190,22 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=float)
     data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float, device=device)
 
-    # # Keep LOO_z for diagnostics
-    # data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)
-
     ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics
     data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)
     data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float, device=device)
     data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float, device=device)
-    # data.skew_dist_z = torch.tensor(skew_dist_z, dtype=torch.float, device=device)
     data.stats_z = torch.tensor(stats_z, dtype=torch.float, device=device)
     return data
+
 
 '''
 3. Data Preprocessing
 '''
-'Record loss history in training Logistic Regression (Using Pytorch)'
-def loss_history_LR(X_raw, y_raw, epochs=100, log_every=1, lr=1e-1,
-                    device="cpu", seed=23, eps=1e-12):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-    X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
-    y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
-    N, d = X.shape
-    K = int(torch.unique(y).numel())
-
-    W = torch.zeros(d, K, device=device, requires_grad=True)
-    b = torch.zeros(K, device=device, requires_grad=True)
-
-    opt = torch.optim.Adam([W, b], lr=lr)
-
-    loss_hist = []
-    for ep in range(1, epochs + 1):
-        logits = X @ W + b
-        loss = F.cross_entropy(logits, y, reduction="mean")
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-
-        if (ep % log_every == 0) or (ep == epochs):
-            with torch.no_grad():
-                logits_t = X @ W + b
-                per_sample = F.cross_entropy(logits_t, y, reduction="none")  # (N,)
-                loss_hist.append(per_sample.detach().cpu().numpy())
-
-    L = np.stack(loss_hist, axis=1)  # (N, T)
-    mu = L.mean(axis=1)
-    var = L.var(axis=1)
-    mn = L.min(axis=1)
-    mx = L.max(axis=1)
-
-    c = L - mu[:, None]
-    s2 = (c**2).mean(axis=1) + eps
-    s = np.sqrt(s2)
-    skew = (c**3).mean(axis=1) / (s**3 + eps)
-    kurt = (c**4).mean(axis=1) / (s2**2 + eps) - 3.0
-
-    stats = np.vstack([mu, var, mn, mx, skew, kurt]).T  # (N, 6)
-    return stats
-
-# 'Treating loss history as time series'
-# def loss_LR_series(X_raw, y_raw, epochs = 101, log_every = 1, lr = 1e-1, device = 'cpu',
-#                    seed = 23, eps = 1e-12):
-#     torch.manual_seed(seed)
-#     np.random.seed(seed)
-#     X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
-#     y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
-#     N, d = X.shape
-#     K = int(torch.unique(y).numel())
-#     W = torch.zeros(d, K, device=device, requires_grad=True)
-#     b = torch.zeros(K, device=device, requires_grad=True)
-#     opt = torch.optim.Adam([W, b], lr=lr)
-#
-#     loss_hist = []
-#     for ep in range(1, epochs + 1):
-#         logits = X @ W + b
-#         loss = F.cross_entropy(logits, y, reduction="mean")
-#         opt.zero_grad(set_to_none=True)
-#         loss.backward()
-#         opt.step()
-#
-#         if (ep % log_every == 0) or (ep == epochs):
-#             with torch.no_grad():
-#                 logits_t = X @ W + b
-#                 per_sample = F.cross_entropy(logits_t, y, reduction="none")  # (N,)
-#                 loss_hist.append(per_sample.detach().cpu().numpy())
-#
-#     L = np.stack(loss_hist, axis=1)  # (N, T)
-#     dL = L[:, 1:] - L[:, :-1]  # (N, T-1)
-#
-#     if dL.shape[1]<100:
-#         dL = np.pad(dL, ((0,0), (0, 100 - dL.shape[1])), mode = "constant")
-#     elif dL.shape[1]>100:
-#         dL = dL[:, :100]
-#
-#     return dL
-
-'Record and inject loss history per 10 epoch'
-def loss_LR_snapshots(X_raw, y_raw, epochs = 100, step = 10, lr = 1e-1, device = 'cpu', seed = 23):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-    X = torch.tensor(np.asarray(X_raw), dtype=torch.float32, device=device)
-    y = torch.tensor(np.asarray(y_raw).astype(int), dtype=torch.long, device=device)
-    N, d = X.shape
-    K = int(torch.unique(y).numel())
-
-    W = torch.zeros(d, K, device=device, requires_grad=True)
-    b = torch.zeros(K, device=device, requires_grad=True)
-    opt = torch.optim.Adam([W, b], lr=lr)
-
-    snaps = []
-    for ep in range(1, epochs + 1):
-        logits = X @ W + b
-        loss = F.cross_entropy(logits, y, reduction="mean")
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-
-        if (ep % step == 0) or (ep == epochs):
-            with torch.no_grad():
-                logits_t = X @ W + b
-                per_sample = F.cross_entropy(logits_t, y, reduction="none")
-                snaps.append(per_sample.detach().cpu().numpy())
-
-    return(np.stack(snaps, axis = 1))
-
-'Compute KNN accuracy'
-def knn_subset_acc(X_raw, y_raw, X_test, y_test, ks=(5, 10, 100), metric="euclidean",
-                   max_iter=100, seed=23, fallback="majority"):
-    from sklearn.neighbors import KNeighborsClassifier
-    Xr = np.asarray(X_raw, dtype=float)
-    yr = np.asarray(y_raw, dtype=int)
-    N = Xr.shape[0]
-
-    D = pairwise_distances(Xr, metric = metric)
-    feats = np.zeros((N, len(ks)), dtype=float)
-
-    nn_sorted = np.argsort(D, axis=1)
-
-    for i in range(N):
-        for j, k in enumerate(ks):
-            k_eff = min(int(k), N - 1)
-            nbrs = nn_sorted[i, 1:k_eff + 1]  # exclude self
-            idx = np.concatenate(([i], nbrs))
-
-            y_sub = yr[idx]
-            uniq = np.unique(y_sub)
-
-            # ---- guard: need at least 2 classes for LR ----
-            if uniq.size < 2:
-                if fallback == "nan":
-                    feats[i, j] = np.nan
-                elif fallback == "majority":
-                    maj = np.bincount(y_sub).argmax()
-                    feats[i, j] = float(np.mean(np.asarray(y_test) == maj))
-                else:  # "skip" or unknown -> 0.0
-                    feats[i, j] = 0.0
-                continue
-
-            lr = LogisticRegression(max_iter=max_iter, random_state=seed)
-            lr.fit(Xr[idx], y_sub)
-            feats[i, j] = lr.score(X_test, y_test)
-
-    return feats
-
-'Subset inclusion frequency'
-def inclusion_freq(X_raw, y_raw, X_test, y_test, subset_sizes = (10, 100, 200),
-                   n_subsets_per_size = 1000, topk = 100, max_iter = 100, seed = 23):
-    rng = np.random.default_rng(seed=seed)
-    Xr = np.asarray(X_raw, dtype=float)
-    yr = np.asarray(y_raw, dtype=int)
-    N = Xr.shape[0]
-
-    feats = np.zeros((N, len(subset_sizes)), dtype=float)
-
-    for j, m in enumerate(subset_sizes):
-        m_eff = min(int(m), N)
-        if m_eff < 2:
-            continue
-        accs = []
-        subs = []
-
-        for t in range(int(n_subsets_per_size)):
-            idx = rng.choice(N, size = m_eff, replace = False)
-            y_sub = yr[idx]
-            if np.unique(y_sub).size < 2:
-                acc = -np.inf
-            else:
-                lr = LogisticRegression(max_iter=max_iter, random_state=seed)
-                lr.fit(Xr[idx], y_sub)
-                acc = lr.score(X_test, y_test)
-
-            accs.append(acc)
-            subs.append(idx)
-        accs = np.array(accs)
-
-        topk_eff = min(int(topk), len(accs))
-        top_idx = np.argsort(accs)[::-1][:topk_eff]
-
-        counts = np.zeros(N, dtype=float)
-        for t in top_idx:
-            counts[subs[t]] += 1
-        feats[:,j] = counts / max(1, topk_eff)
-
-    return feats
-
-
 def load_and_preprocess(train_csv, test_csv, d = svd_d):
     df_train = pd.read_csv(train_csv)
     X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
-    # X_raw = df_train.drop(columns=['target', 'TrueDShap']).astype(float).to_numpy()
     y_raw = df_train['target'].to_numpy().astype(int)
     phi = df_train['PerDShap'].to_numpy()
-    # phi = df_train['TrueDShap'].to_numpy()
     df_test = pd.read_csv(test_csv)
     X_test = df_test.drop(columns=['target']).astype(float).to_numpy()
     y_test = df_test['target'].to_numpy().astype(int)
@@ -475,7 +215,7 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
     model_acc = lr_full.score(X_test, y_test)
     total_util = model_acc
 
-    ## Compute gradient  info
+    ## Compute gradient norm and gradient error
     n, d_feat = X_raw.shape
     P = lr_full.predict_proba(X_raw)  # (N, C)
     classes = lr_full.classes_  # shape (C,)
@@ -502,42 +242,6 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
     grad_norm_z = _standardize(grad_norm)
     grad_err_z  = _standardize(grad_err)
 
-    # ## Injection of Loss History statistics
-    # loss_stats = loss_history_LR(X_raw, y_raw, epochs=100, log_every=1, lr=1e-1, device = device)
-    # loss_stats_z = np.column_stack([_standardize(loss_stats[:, j]) for j in range(loss_stats.shape[1])])
-
-    # ## Mute Injection of Loss History statistics
-    # loss_stats_z = np.zeros((X_raw.shape[0], 0), dtype=float)
-
-    # ## Injection of time series loss
-    # loss_series_LR = loss_LR_series(X_raw, y_raw, epochs = 101, log_every = 1,
-    #                                 lr = 1e-1, device = device, seed = 23)
-    # loss_stats_z =  np.zeros_like(loss_series_LR, dtype=float)
-    # for j in range(loss_series_LR.shape[1]):
-    #     loss_stats_z[:, j] = _standardize(loss_series_LR[:, j])
-
-    ## Injection of loss history per 10 epochs
-    loss_snaps = loss_LR_snapshots(X_raw, y_raw, epochs=100, step=10, lr=1e-1, device=device, seed=23)
-    loss_stats_z = np.zeros_like(loss_snaps, dtype=float)
-    for j in range(loss_snaps.shape[1]):
-        loss_stats_z[:, j] = _standardize(loss_snaps[:, j])
-
-    ## Injection of KNN's accuracy
-    knn_acc = knn_subset_acc(X_raw, y_raw, X_test, y_test, ks = (5, 10, 100), metric = "euclidean",
-                             max_iter = 100, seed = 23)
-    knn_acc_z = np.zeros_like(knn_acc, dtype=float)
-    for j in range(knn_acc.shape[1]):
-        knn_acc_z[:, j] = _standardize(knn_acc[:, j])
-
-    ## Injection of inclusion frequency
-    inc_freq = inclusion_freq(X_raw, y_raw, X_test, y_test, subset_sizes = (10, 100, 200),
-                              n_subsets_per_size = 300, topk = 100, max_iter = 100, seed = 23)
-    inc_freq_z = np.zeros_like(inc_freq, dtype=float)
-    for j in range(inc_freq.shape[1]):
-        inc_freq_z[:, j] = _standardize(inc_freq[:, j])
-
-
-
     ## Compute LOO values
     n = X_raw.shape[0]
     loo_raw = np.zeros(n, dtype=float)
@@ -551,6 +255,7 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
         acc_i = lr_i.score(X_test, y_test)
 
         loo_raw[i] = model_acc - acc_i  # LOO_i = U(D) - U(D\{i})
+
     mu = loo_raw.mean()
     std = loo_raw.std()
     if std < 1e-12:
@@ -560,12 +265,8 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
 
     data_list = []
     for c in C_List:
-        # data = build_graph(X_raw, y_raw, phi, total_util, d = d, c = c, loo_z = loo_z)
-        # data = build_graph(X_raw, y_raw, phi, total_util, c=c, loo_z=loo_z, grad_norm_z=grad_norm_z,
-        #                      grad_err_z=grad_err_z, loss_stats_z = loss_stats_z, d=d)
         data = build_graph(X_raw, y_raw, phi, total_util, c=c, loo_z=loo_z, grad_norm_z=grad_norm_z,
-                             grad_err_z=grad_err_z, loss_stats_z = loss_stats_z, knn_acc_z = knn_acc_z,
-                                inc_freq_z = inc_freq_z, d=d)
+                             grad_err_z=grad_err_z, d=d)
         data_list.append(data)
     return data_list
 
@@ -729,9 +430,10 @@ class GINShap(torch.nn.Module):
 '''
 5. Training (standard scheme)
 '''
-def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_test_dir: str = None,
+def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_test_dir: str = None,
           holdout_bases: list = None, out_dir: str = None, scheduler_type: str = "step", step_size: int = 50,
           step_gamma: float = 0.5, lambda_fn = None, log_every: int = 5):
+
     model.to(device)
 
     ## Record time
@@ -762,12 +464,12 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
 
     catalog = None
     if holdout_bases and base_test_dir:
-        catalog = {it["base_name"]: it
-                   for it in discover_datasets(base_test_dir, require_tmc=False)}
+        catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc=False)}
 
     for ep in range(1, epochs + 1):
         if device.type == "cuda": torch.cuda.synchronize()
         t0_train = time.perf_counter()
+        'TRAIN'
         model.train()
         losses = []
         for data_list in dataset_graphs:
@@ -792,90 +494,59 @@ def train(model, dataset_graphs, epochs=500, lr=1e-4, weight_decay=1e-7, base_te
         loss_history.append(L.item())
 
         avg_mse = None
-        t0_test = None
-        # if holdout_bases and base_test_dir:
-        if catalog is not None:
+        if catalog is not None and (holdout_bases is not None) and len(holdout_bases) > 0:
             if device.type == "cuda": torch.cuda.synchronize()
             t0_test = time.perf_counter()
 
             model.eval()
-            row = {"epoch": ep}
-            # with torch.no_grad():
-            #     catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
-            #     mses = []
-            #     for base in holdout_bases:
-            #         if base not in catalog:
-            #             continue
-            #         p = catalog[base]
-            #         # dl = load_and_preprocess(p['train_like'], p['test'], d = model.skip_lin.in_features)
-            #         ## inject LOO
-            #         dl = load_and_preprocess(p['train_like'], p['test'], d=svd_d)
-            #         pred_scaled = model(dl).view(-1)
-            #         phi_t = dl[0].phi.to(device).view(-1)
-            #         total_util_t = dl[0].total_util.to(device)
-            #         N_t = phi_t.numel()
-            #         scale_t = (N_t/total_util_t)
-            #         phi_t_scaled = phi_t * scale_t
-            #         m = F.mse_loss(pred_scaled, phi_t_scaled, reduction='mean').item()
-            #         row[base] = m
-            #         mses.append(m)
-            #     if mses:
-            #         avg_mse = float(np.mean(mses))
-            #         row['avg_mse'] = avg_mse
-            #         per_epoch_rows.append(row)
-
-            ## To incorporate with injection of gradient info of LR
-            # if holdout_bases and base_test_dir:
-            # if catalog is not None:
-            model.eval()
-            row = {"epoch": ep}
-            # catalog = {it["base_name"]: it for it in discover_datasets(base_test_dir, require_tmc = False)}
+            row = {"epoch":ep}
             mses = []
 
-            # for base in holdout_bases:
-            for base in (holdout_bases or []):
-                if base not in catalog:
+            for base in holdout_bases:
+                p = catalog.get(base, None)
+                if p is None:
                     continue
-                p = catalog[base]
-                ## Put LR outside of no_grad block to allow recording loss history
-                dl = load_and_preprocess(p['train_like'], p['test'], d=svd_d)
+
+                dl = load_and_preprocess(p["train_like"], p["test"], d = svd_d)
+
                 with torch.no_grad():
                     pred_scaled = model(dl).view(-1)
                     phi_t = dl[0].phi.to(device).view(-1)
                     total_util_t = dl[0].total_util.to(device)
                     N_t = phi_t.numel()
                     phi_t_scaled = phi_t * (N_t / total_util_t)
-                    m = F.mse_loss(pred_scaled, phi_t_scaled, reduction='mean').item()
+                    m = F.mse_loss(pred_scaled, phi_t_scaled, reduction="mean").item()
+
                 row[base] = m
                 mses.append(m)
 
             if mses:
                 avg_mse = float(np.mean(mses))
-                row['avg_mse'] = avg_mse
+                row["avg_mse"] = avg_mse
                 per_epoch_rows.append(row)
 
             if device.type == "cuda": torch.cuda.synchronize()
             test_time_hist.append(time.perf_counter() - t0_test)
         else:
             test_time_hist.append(0.0)
-        # if (ep % 5 == 0) and (avg_mse is not None):
-        #     print(f'Epoch {ep:4d} | Test avg MSE: {avg_mse:.6e}')  # *** CHANGED
+
         if (ep % log_every == 0) or (ep == 1) or (ep == epochs):
             if avg_mse is None:
-                print(f'Epoch {ep:4d} | Train MSE: {L.item():.10e}')
+                print(f"Epoch {ep:5d} | Train MSE: {L.item():.8e}")
             else:
-                print(f'Epoch {ep:4d} | Train MSE: {L.item():.10e} | Test MSE: {avg_mse:.10e}')
+                print(f"Epoch {ep:5d} | Train MSE: {L.item():.8e} | Test MSE: {avg_mse:.8e}")
 
     if out_dir:
         xs = np.arange(len(loss_history))
         ys = np.array(loss_history)
+        ## Save training mse
         pd.DataFrame({"epoch": xs + 1, "train_mse": ys}).to_csv(os.path.join(out_dir, "Training_MSE.csv"), index = False)
-        pd.DataFrame({
-            "epoch": xs + 1,
-            "train_mse": ys,
-            "train_sec": np.array(train_time_hist, dtype=float),
-            "test_sec": np.array(test_time_hist, dtype=float),
-        }).to_csv(os.path.join(out_dir, "Training_MSE_and_Time.csv"), index=False)
+        ## Save train & test time
+        time_txt = os.path.join(out_dir, "Train_Test_Time.txt")
+        with open(time_txt, "w") as f:
+            f.write("epoch,train_sec,test_sec\n")
+            for ep, tr, te in zip(xs + 1, train_time_hist, test_time_hist):
+                f.write(f"{ep},{float(tr):.6f},{float(te):.6f}\n")
 
         if per_epoch_rows:
             df_full = pd.DataFrame(per_epoch_rows)
@@ -1019,7 +690,6 @@ def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str =
         print('Saved to:', out_csv)
 
         true_vals = df_train['PerDShap'].to_numpy()
-        # true_vals = df_train['TrueDShap'].to_numpy()
         pred_vals = df_train['Pred_Shap'].to_numpy()
         y_labels = (df_train['target'].to_numpy().astype(int) if 'target' in df_train.columns else np.zeros_like(true_vals))
         mean_true, mean_pred = true_vals.mean(), pred_vals.mean()
@@ -1028,16 +698,20 @@ def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str =
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (16, 6))
 
         # --- Bar plot ---
-        ax1.bar(idx - width, true_vals, width, label='True Shapley', color=COLORS["true"],
-                edgecolor='k', alpha=0.7)
-        ax1.bar(idx + width, pred_vals, width, label='Predicted Shapley', color=COLORS["pred"],
-                edgecolor='k', alpha=0.7)
-        ax1.plot(idx, [mean_true]*N, '--', linewidth=2, color=COLORS["true"], label=f'Mean True: {mean_true:.3f}')
-        ax1.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"], label=f'Mean Pred: {mean_pred:.3f}')
-        ax1.set_xlabel('Sample Index', fontsize=12, weight='bold')
-        ax1.set_ylabel('Shapley Value', fontsize=12, weight='bold')
-        ax1.set_title('Normalized True vs Predicted Shapley (Bar)', fontsize=13, weight='bold')
-        ax1.grid(axis='y', linestyle='--', alpha=0.4); ax1.legend(fontsize=10)
+        bins = 50
+        ax1.hist(true_vals, bins=bins, alpha=0.55, label='Permutated-based Data Shapley',
+                 edgecolor='k', linewidth=0.3, color=COLORS["true"])
+        ax1.hist(pred_vals, bins=bins, alpha=0.55, label='Predicted Data Shapley',
+                 edgecolor='k', linewidth=0.3, color=COLORS["pred"])
+
+        ax1.axvline(mean_true, linestyle='--', linewidth=2, color=COLORS["true"], label=f'Mean True: {mean_true:.3f}')
+        ax1.axvline(mean_pred, linestyle='--', linewidth=2, color=COLORS["pred"], label=f'Mean Pred: {mean_pred:.3f}')
+
+        ax1.set_xlabel('Data Shapley Value', fontsize=12, weight='bold')
+        ax1.set_ylabel('Count', fontsize=12, weight='bold')
+        ax1.set_title('Permutated-based vs Predicted Data Shapley (Histogram)', fontsize=13, weight='bold')
+        ax1.grid(axis='y', linestyle='--', alpha=0.4)
+        ax1.legend(fontsize=10)
 
         # --- Scatter ---
         lo, hi = min(true_vals.min(), pred_vals.min()), max(true_vals.max(), pred_vals.max())
@@ -1055,8 +729,8 @@ def diagnose_train_sets(gnn, base_train_dir: str, out_dir: str, graph_dir: str =
                         **st, facecolors='none', edgecolors=COLORS["pred"], linewidths=1.2)
 
         ax2.plot([lo, hi], [lo, hi], '--k', linewidth=1.5)
-        ax2.set_xlabel('True Shapley Values (normalized)', fontsize=12, weight='bold')
-        ax2.set_ylabel('Predicted Shapley Values', fontsize=12, weight='bold')
+        ax2.set_xlabel('Permutated-based Data Shapley Values', fontsize=12, weight='bold')
+        ax2.set_ylabel('Predicted Data Shapley Values', fontsize=12, weight='bold')
         ax2.set_title('True vs Predicted (Scatter)', fontsize=13, weight='bold')
         ax2.grid(True, linestyle='--', alpha=0.4)
 
@@ -1135,19 +809,31 @@ def diagnose_test_sets(gnn, base_test_dir: str, holdout_bases, out_dir: str, a =
         pred_vals = np.asarray(Pred_Shap)
         mean_tmc, mean_per, mean_pred = tmc_vals.mean(), per_vals.mean(), pred_vals.mean()
         N = len(per_vals); idx = np.arange(N); width = 0.27
+        bins = 50
+        plt.figure(figsize=(11, 8))
+        plt.hist(per_vals, bins=bins, alpha=0.45, label='Permutated-based Data Shapley',
+                 edgecolor='k', linewidth=0.3, color=COLORS["true"])
+        plt.hist(tmc_vals, bins=bins, alpha=0.45, label='TMC Data Shapley',
+                 edgecolor='k', linewidth=0.3, color=COLORS["tmc"])
+        plt.hist(pred_vals, bins=bins, alpha=0.45, label='Predicted Data Shapley',
+                 edgecolor='k', linewidth=0.3, color=COLORS["pred"])
 
-        plt.figure(figsize=(11,6))
-        plt.bar(idx - width, per_vals,  width, label='Permuted Shapley', color=COLORS["true"], edgecolor='k', alpha=0.7)
-        plt.bar(idx,          tmc_vals, width, label='TMC Shapley',      color=COLORS["tmc"], edgecolor='k', alpha=0.7)
-        plt.bar(idx + width,  pred_vals, width, label='Predicted Shapley', color=COLORS["pred"], edgecolor='k', alpha=0.7)
-        plt.plot(idx, [mean_per]*N,  '--', linewidth=2, color=COLORS["true"], label=f'Avg Permuted ({mean_per:.3f})')
-        plt.plot(idx, [mean_tmc]*N,  '--', linewidth=2, color=COLORS["tmc"],  label=f'Avg TMC ({mean_tmc:.3f})')
-        plt.plot(idx, [mean_pred]*N, '--', linewidth=2, color=COLORS["pred"], label=f'Avg Pred ({mean_pred:.3f})')
-        plt.xlabel('Sample Index'); plt.ylabel('Shapley Value')
-        plt.title(f'Comparison of Shapley Values — {base}')
-        plt.grid(axis='y', linestyle='--', alpha=0.4); plt.legend(); plt.tight_layout()
-        bar_png = os.path.join(out_dir, f'{base}_ShapleyCompare.png')
-        plt.savefig(bar_png, dpi=500); plt.close()
+        plt.axvline(mean_per, linestyle='--', linewidth=2, color=COLORS["true"], label=f'Avg Permuted ({mean_per:.3f})')
+        plt.axvline(mean_tmc, linestyle='--', linewidth=2, color=COLORS["tmc"], label=f'Avg TMC ({mean_tmc:.3f})')
+        plt.axvline(mean_pred, linestyle='--', linewidth=2, color=COLORS["pred"], label=f'Avg Pred ({mean_pred:.3f})')
+
+        plt.xlabel('Shapley Value', fontsize = 10)
+        plt.ylabel('Count', fontsize = 10)
+        plt.title(f'Distribution of Shapley Values — {base}', fontsize = 11)
+        plt.xticks(fontsize=9)
+        plt.yticks(fontsize=9)
+        plt.grid(axis='y', linestyle='--', alpha=0.4)
+        plt.legend(fontsize=8);
+        plt.tight_layout()
+
+        bar_png = os.path.join(out_dir, f'{base}_DShapHistogram.png')
+        plt.savefig(bar_png, dpi=500);
+        plt.close()
         print('saved ➜', bar_png)
 
         # Linear comparison
@@ -1222,7 +908,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260101/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260112/Trial1'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1']
 
     _ = train_then_diagnose(
@@ -1232,29 +918,3 @@ if __name__ == "__main__":
         scheduler_type="None", step_size=50, step_gamma = 0.5
     )
 
-# if __name__ == "__main__":
-#     BASE_TRAIN = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Train'
-#     BASE_TEST  = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Multi_Toy/Test'
-#     OUT_DIR    = '/Users/cuhksz-ml-01/Library/CloudStorage/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Outputs_II/251130/Trial01'
-#     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'Vehicle_1']
-#         # , 'CIFAR10_19xxx_2', 'FashionMNIST_0469x_1', 'MNIST_89xxx_21']
-#
-#     _ = train_then_diagnose(
-#         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
-#         in_channels=100, hidden_channels=128, heads=4,
-#         epochs=1000, lr=1e-5, weight_decay=1e-7,
-#         scheduler_type="None", step_size=50, step_gamma = 0.5
-#     )
-
-# if __name__ == "__main__":
-#     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Train'
-#     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Medium/Test'
-#     OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/251103/Trial04'
-#     HOLDOUTS   = ['Iris_1', 'MNIST_369xx_20', 'MNIST_459xx_22', 'MNIST_89xxx_21']
-#
-#     _ = train_then_diagnose(
-#         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
-#         in_channels=100, hidden_channels=128, heads=4,
-#         epochs=1000, lr=5e-5, weight_decay=1e-7,
-#         scheduler_type="step", step_size=50, step_gamma=0.5
-#     )
