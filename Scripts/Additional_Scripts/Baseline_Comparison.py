@@ -36,13 +36,44 @@ from pydvl.valuation.samplers.stratified import DeltaShapleyNCSGDSampleSize
 from pydvl.valuation.samplers.stratified import StratifiedSampler, PowerLawSampleSize
 
 
+' For Calculation of TMC Data Shapley Values'
+### Check Working Directory
+import sys
+print(sys.executable)
+import os
+# os.chdir('/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+os.chdir('/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/DataShapley')
+sys.path.append(os.getcwd())
+#sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+
+### Package and Environments for TMC_Shapley
+#%load_ext autoreload
+#%autoreload 2
+#import shap_utils
+#importlib.reload(shap_utils)
+import numpy as np
+import pandas as pd
+from DShap import DShap
+from shap_utils import *
+from sklearn.utils import shuffle
+from sklearn.decomposition import PCA
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.datasets import load_iris, load_breast_cancer
+from sklearn.model_selection import train_test_split
+
+#%matplotlib inline
+MEM_DIR = '../'
+
+
 '''
 1. Load Data
 '''
 TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Vehicle_01_1"
 TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Vehicle_01_test_1"
-TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Vehicle_01_TMC_1"
-OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle"
+# TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test/Vehicle_01_TMC_1"
+# OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle"
 LABEL_COL = "target"
 # PRED_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/MNIST_Comparison/MNIST_459xx_22_Pred.csv"
 runtimes = {}
@@ -72,18 +103,37 @@ scorer = SupervisedScorer("accuracy", test_ds, default=0.0, range=(0.0, 1.0))
 utility = ModelUtility(lr, scorer)
 
 # (B) KNN for KNN-Shapley
-knn = KNeighborsClassifier(n_neighbors=5)
+knn = KNeighborsClassifier(n_neighbors=10)
 
 # ---------- Common stoppers ----------
-shapley_stopping   = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
-beta_stopping      = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
-delta_stopping     = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
-group_stopping     = MinUpdates(5000) | RankCorrelation(rtol=1e-3, burn_in=200)
+shapley_stopping   = MinUpdates(500) | RankCorrelation(rtol=1e-3, burn_in=200)
+beta_stopping      = MinUpdates(500) | RankCorrelation(rtol=1e-3, burn_in=200)
+delta_stopping     = MinUpdates(500) | RankCorrelation(rtol=1e-3, burn_in=200)
+group_stopping     = MinUpdates(500) | RankCorrelation(rtol=1e-3, burn_in=200)
 
 
 '''
 2. Compute Valuations
 '''
+# Computation of TMC Shapley
+model = 'logistic'
+problem = 'classification'
+metric = 'accuracy'
+directory = './temp'
+shapley_model = DShap(X_train, y_train,
+                      X_test, y_test,
+                      num_test = 75, sources=None,
+                      sample_weight=None, model_family=model,
+                      metric=metric, overwrite=True,
+                      directory=directory, seed=251013,
+                      max_iter=3000, tol=1e-5)
+shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
+vals = np.asarray(shapley_model.vals_tmc).reshape(-1)
+Vehicle_TMC = pd.DataFrame(X_train)  # columns become 0..d-1
+Vehicle_TMC["TMC_Shap"] = vals
+save_dir = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260120/TMC_DShap"
+Vehicle_TMC.to_csv(f'{save_dir}/Vehicle_TMC_2', index=False)
+
 # ---------- 1) Permutation-based Shapley ----------
 perm_sampler = PermutationSampler(truncation=RelativeTruncation(rtol=0.01, burn_in_fraction=0.3), seed=42)
 val_shapley  = ShapleyValuation(utility, perm_sampler, shapley_stopping, progress=True)
@@ -104,7 +154,7 @@ cw_sampler = ClasswiseSampler(
     max_in_class_samples=1
 )
 n_labels = len(np.unique(y_train))
-cw_stop  = MaxSamples(cw_sampler, 500 * n_labels) | History(n_steps=5000)
+cw_stop  = MaxSamples(cw_sampler, 500 * n_labels) | History(n_steps=500)
 val_cs   = ClasswiseShapleyValuation(utility=cw_utility, sampler=cw_sampler, is_done=cw_stop, normalize_values=True)
 timed_fit("ClasswiseShapley", val_cs, train_ds)
 cs_values = val_cs.result.values
@@ -112,19 +162,19 @@ cs_values = val_cs.result.values
 # ---------- 4) Delta Shapley ----------
 n = len(train_ds)
 l, u = n//3, (2*n)//3
-size_strategy = PowerLawSampleSize(lower_bound=l, upper_bound=u, exponent=2.0, n_samples=1000)
+size_strategy = PowerLawSampleSize(lower_bound=l, upper_bound=u, exponent=2.0, n_samples=500)
 sampler = StratifiedSampler(sample_sizes=size_strategy, seed=42)
 val_delta = DeltaShapleyValuation(utility=utility, sampler=sampler, is_done=delta_stopping, progress=True)
 timed_fit("DeltaShapley", val_delta, train_ds)
 delta_vals = val_delta.result.values
 
 # ---------- 5) Group Testing Shapley ----------
-val_group = GroupTestingShapleyValuation(utility=utility, progress=True, n_samples=2000, epsilon=0.05)
+val_group = GroupTestingShapleyValuation(utility=utility, progress=True, n_samples=300, epsilon=0.05)
 timed_fit("GroupTesting", val_group, train_ds)
 group_vals = val_group.result.values
 
 # ---------- 6) Owen Shapley ----------
-owen_sampler = OwenSampler(outer_sampling_strategy=GridOwenStrategy(n_samples_outer=200), n_samples_inner=2)
+owen_sampler = OwenSampler(outer_sampling_strategy=GridOwenStrategy(n_samples_outer=50), n_samples_inner=1)
 owen_stop = NoStopping(owen_sampler)
 owen_val = ShapleyValuation(utility, owen_sampler, owen_stop, progress=True)
 
@@ -164,7 +214,7 @@ pred_df = pd.read_csv(TRAIN_CSV)
 pred_df = pred_df.reset_index(drop=True)
 #df_train = df_train.reset_index(drop=True)
 combined_df = pd.concat([pred_df, shapley_df], axis=1)
-combined_df.to_csv(os.path.join(OUT_DIR, "characters_048_Comparison.csv"), index=False)
+combined_df.to_csv(os.path.join(OUT_DIR, "Vehicle_01_1_Comparison_3.csv"), index=False)
 
 
 '''
@@ -173,20 +223,21 @@ combined_df.to_csv(os.path.join(OUT_DIR, "characters_048_Comparison.csv"), index
 # =========================
 # 3.0 Load CSVs (as you do)
 # =========================
-TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle/Vehicle_01_1"
-TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle/Vehicle_01_test_1"
-PRED_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle/Vehicle_01_1_Pred.csv"
-TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle/Vehicle_01_TMC_1"
-OUT_DIR2  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260105/baseline2/Vehicle"
+TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle/Vehicle_01_1"
+TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle/Vehicle_01_test_1"
+PRED_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle/Vehicle_01_1_Pred.csv"
+# TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle/Vehicle_01_TMC_1.csv"
+OUT_DIR2  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle"
 
-df      = pd.read_csv(os.path.join(OUT_DIR2, "Vehicle_01_1_Comparison.csv"))
+# df      = pd.read_csv(os.path.join(OUT_DIR2, "characters_048_1_Comparison_2.csv"))
 df_pred = pd.read_csv(PRED_CSV)
-df_tmc  = pd.read_csv(TMC_CSV)
+# df_tmc  = pd.read_csv(TMC_CSV)
 
 # =========================
 # 3.1 Extract arrays
 # =========================
 y_vals    = df["target"].to_numpy()
+df = pd.read_csv(TRAIN_CSV)
 per_vals  = df["PerDShap"].to_numpy()
 
 beta_vals  = df["BetaShapley"].to_numpy()
@@ -195,8 +246,8 @@ gt_vals    = df["GroupTesting"].to_numpy()
 owen_vals  = df["OwenShapley"].to_numpy()
 cw_vals    = df["Classwise_Shapley"].to_numpy()
 knn_vals   = df["KNNShapley"].to_numpy()
-
-tmc_vals   = df_tmc["TMC_Shap"].to_numpy()
+tmc_vals = Vehicle_TMC["TMC_Shap"]
+# tmc_vals   = df_tmc["TMC_Shap"].to_numpy()
 pred_vals  = df_pred["Pred_Shap"].to_numpy()
 
 # =========================
@@ -1061,7 +1112,7 @@ if __name__ == "__main__":
         "KNN Shapley": rng.normal(size=n_points),
         "Predicted Shapley": rng.normal(size=n_points),
     }
-    out_dir = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260104/baseline2/Vehicle"
+    out_dir = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260118/Baseline1/Vehicle"
     os.makedirs(out_dir, exist_ok=True)
 
     # A1 removal (if you have your own X_train/X_test, pass dataset=None and provide arrays)

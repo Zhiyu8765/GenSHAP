@@ -85,7 +85,7 @@ def flip_pe_sign(x, method='sum'):
 
 'SVD'
 svd_d = 100
-FEAT_DIM = svd_d + 12
+FEAT_DIM = svd_d + 14
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -154,19 +154,32 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     grad_norm_z = np.asarray(grad_norm_z).reshape(-1, 1)  # (N, 1)
     grad_err_z = np.asarray(grad_err_z).reshape(-1, 1)  # (N, 1)
 
-    # Record number of classes of each dataset
-    N = X_raw.shape[0]
-    K = int(np.unique(y).size)
-    k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=float)
-    k_feat = np.tile(k_vec, (N, 1))
+    ## Injection of KNN Ratio
+    K_List = [5, 7, 9, 10, 15]
+    max_k = max(K_List)
+    nn_idx = np.argpartition(D, kth=max_k, axis=1)[:, :max_k + 1]
+    rows = np.arange(D.shape[0])[:, None]
+    nn_idx = np.array([row[row != i][:max_k] for i, row in enumerate(nn_idx)])
+    order = np.argsort(D[rows, nn_idx], axis = 1)
+    nn_idx = nn_idx[rows, order]
+    neigh_y = y[nn_idx]
+    center_y = y[:, None]
+    diff = (neigh_y != center_y)
+    knn_ratios = []
+    for k in K_List:
+        knn_ratios.append(diff[:, :k].mean(axis = 1))
+    knn_ratio_feat = np.stack(knn_ratios, axis = 1)
+    knn_ratio_z = np.column_stack([_standardize(knn_ratio_feat[:, i]) for i in range(knn_ratio_feat.shape[1])])
 
     ## weight on injected features
     weight_extra = 3.0
-    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, k_feat], axis=1)  # (N, 9)
+
+    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, knn_ratio_z], axis=1)  # (N, 14)
     extra_feats *= weight_extra
     X_node = np.concatenate([X_svd, extra_feats], axis=1)
 
 
+    N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
     edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis=1), dtype=torch.long, device=device)
@@ -189,7 +202,11 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     data.total_util = torch.tensor(total_util, dtype=torch.float, device=device)
     data.y = torch.tensor(y_raw, dtype=torch.long, device=device)
     data.num_classes = int(len(np.unique(y)))
-    data.k_feat = torch.tensor(k_feat, dtype=torch.float, device=device)
+
+    # Record number of classes of each dataset
+    K = int(np.unique(y).size)
+    k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=float)
+    data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float, device=device)
 
     ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics
     data.loo_z = torch.tensor(loo_z, dtype=torch.float, device=device)
@@ -203,6 +220,29 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
 3. Data Preprocessing
 '''
 def load_and_preprocess(train_csv, test_csv, d = svd_d):
+    def _standardize(arr):
+        mu = arr.mean()
+        std = arr.std()
+        if std < 1e-12:
+            return np.zeros_like(arr)
+        return (arr - mu) / std
+
+    def _skewness_1d(v, eps=1e-12):
+        v = np.asarray(v)
+        m = v.mean()
+        c = v - m
+        s2 = np.mean(c ** 2)
+        s = np.sqrt(s2 + eps)
+        return np.mean(c ** 3) / (s ** 3 + eps)
+
+    def _kurtosis_1d(v, eps=1e-12):
+        v = np.asarray(v, dtype=float)
+        m = v.mean()
+        c = v - m
+        s2 = np.mean(c ** 2)
+        s4 = (s2 + eps) ** 2
+        return np.mean(c ** 4) / s4 - 3.0
+
     df_train = pd.read_csv(train_csv)
     X_raw = df_train.drop(columns=['target','PerDShap']).astype(float).to_numpy()
     y_raw = df_train['target'].to_numpy().astype(int)
@@ -233,12 +273,6 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
 
     p_true = P[np.arange(n), col_idx]  # (N,)
     grad_err = 1.0 - p_true
-    def _standardize(arr):
-        mu = arr.mean()
-        std = arr.std()
-        if std < 1e-12:
-            return np.zeros_like(arr)
-        return (arr - mu) / std
 
     grad_norm_z = _standardize(grad_norm)
     grad_err_z  = _standardize(grad_err)
@@ -480,7 +514,11 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             scale = N/total_util
             phi_true_scaled = phi_true * scale
             phi_hat_scaled = model(data_list).view(-1)
-            loss = F.mse_loss(phi_true_scaled, phi_hat_scaled, reduction = "mean")
+            # loss = F.mse_loss(phi_true_scaled, phi_hat_scaled, reduction = "mean")
+            c_w = 2
+            w = torch.exp(-phi_true_scaled / c_w)
+            w = torch.clamp(w, 0.1, 10.0)
+            loss = torch.mean(w * (phi_hat_scaled - phi_true_scaled) ** 2)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -516,7 +554,11 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
                     total_util_t = dl[0].total_util.to(device)
                     N_t = phi_t.numel()
                     phi_t_scaled = phi_t * (N_t / total_util_t)
-                    m = F.mse_loss(pred_scaled, phi_t_scaled, reduction="mean").item()
+                    # m = F.mse_loss(pred_scaled, phi_t_scaled, reduction="mean").item()
+                    c_w = 2
+                    w = torch.exp(-phi_t_scaled / c_w)
+                    # w = torch.clamp(w, 0.1, 10.0)  # recommended safety
+                    m = torch.mean(w * (pred_scaled - phi_t_scaled) ** 2).item()
 
                 row[base] = m
                 mses.append(m)
@@ -888,6 +930,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
     triplets = discover_datasets(BASE_TRAIN, require_tmc = False)
     dataset_graphs = [load_and_preprocess(it["train_like"], it["test"], d = svd_d) for it in triplets]
 
+    in_channels = dataset_graphs[0][0].x.size(1)
     gnn = GINShap(in_channels = in_channels, hidden_channels = hidden_channels, heads = heads)
     _ = train(gnn, dataset_graphs, epochs=epochs, lr=lr,
               base_test_dir=BASE_TEST, holdout_bases=holdout_bases, out_dir=OUT_DIR,
@@ -909,8 +952,8 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260112/Trial2'
-    HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1']
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260120/Trial1'
+    HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_17xxx_2', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
