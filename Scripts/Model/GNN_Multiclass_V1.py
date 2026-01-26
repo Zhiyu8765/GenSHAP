@@ -2,7 +2,7 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import re
 import dgl
 import torch
@@ -148,7 +148,6 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     y = np.asarray(y_raw).ravel()
     A_y = (y[:, None] == y[None, :]).astype(float)
 
-
     ## Injection of LOO + Gradient Norm + Grad Error
     loo_z = np.asarray(loo_z).reshape(-1, 1)  # (N, 1)
     grad_norm_z = np.asarray(grad_norm_z).reshape(-1, 1)  # (N, 1)
@@ -177,7 +176,6 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, knn_ratio_z], axis=1)  # (N, 14)
     extra_feats *= weight_extra
     X_node = np.concatenate([X_svd, extra_feats], axis=1)
-
 
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
@@ -214,7 +212,6 @@ def build_graph(X_raw, y_raw, phi, total_util, c, loo_z, grad_norm_z, grad_err_z
     data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float, device=device)
     data.stats_z = torch.tensor(stats_z, dtype=torch.float, device=device)
     return data
-
 
 '''
 3. Data Preprocessing
@@ -379,7 +376,7 @@ def load_and_preprocess(train_csv, test_csv, d = svd_d):
 
 ' Version B. Parallel GIN & GT '
 class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2):
+    def __init__(self, in_channels, hidden_channels = 128, out_channels = 1, heads = 4):
         super().__init__()
         def mlp(i, o):
             return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
@@ -389,7 +386,7 @@ class GINShap(torch.nn.Module):
         self.branches = torch.nn.ModuleList()
         for _ in C_List:
             convs = torch.nn.ModuleList()
-            for layer in range(2):
+            for layer in range(3):
                 convs.append(
                     GINConv(mlp(in_channels if layer == 0 else hidden_channels, hidden_channels),
                             aggregator_type = 'sum', init_eps = 0.1, learn_eps = True,
@@ -401,7 +398,7 @@ class GINShap(torch.nn.Module):
         d_concat = hidden_channels * len(C_List)
 
         encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = 2)
+        self.gt = TransformerEncoder(encoder_layer, num_layers = 3)
 
         self.pre_gt = Linear(in_channels, d_concat)
 
@@ -461,13 +458,12 @@ class GINShap(torch.nn.Module):
         h_plus = torch.cat([h_fused, k_col], dim = 1)
         return self.out(h_plus)
 
-
 '''
 5. Training (standard scheme)
 '''
 def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_test_dir: str = None,
           holdout_bases: list = None, out_dir: str = None, scheduler_type: str = "step", step_size: int = 50,
-          step_gamma: float = 0.5, lambda_fn = None, log_every: int = 5):
+          step_gamma: float = 0.5, lambda_fn = None, eval_every: int = 50):
 
     model.to(device)
 
@@ -495,6 +491,7 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
 
     loss_history = []
+    train_mse_phi_hist = []
     per_epoch_rows = []
 
     catalog = None
@@ -507,6 +504,7 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
         'TRAIN'
         model.train()
         losses = []
+        mses = []
         for data_list in dataset_graphs:
             total_util = data_list[0].total_util.to(device)
             phi_true = data_list[0].phi.to(device).view(-1)
@@ -514,8 +512,11 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             scale = N/total_util
             phi_true_scaled = phi_true * scale
             phi_hat_scaled = model(data_list).view(-1)
+            ## Record MSE
+            phi_hat = phi_hat_scaled * (total_util / N)
+            mse_phi = F.mse_loss(phi_hat, phi_true, reduction = "mean")
             # loss = F.mse_loss(phi_true_scaled, phi_hat_scaled, reduction = "mean")
-            c_w = 2
+            c_w = 0.5
             w = torch.exp(-phi_true_scaled / c_w)
             w = torch.clamp(w, 0.1, 10.0)
             loss = torch.mean(w * (phi_hat_scaled - phi_true_scaled) ** 2)
@@ -523,6 +524,7 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             loss.backward()
             optimizer.step()
             losses.append(loss.detach())
+            mses.append(mse_phi.detach())
         if device.type == "cuda": torch.cuda.synchronize()
         train_time_hist.append(time.perf_counter() - t0_train)
 
@@ -530,15 +532,19 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             scheduler.step()
 
         L = torch.stack(losses).mean()
+        Lm = torch.stack(mses).mean()
         loss_history.append(L.item())
+        train_mse_phi_hist.append(Lm.item())
 
         avg_mse = None
-        if catalog is not None and (holdout_bases is not None) and len(holdout_bases) > 0:
+        do_eval = (catalog is not None) and (holdout_bases is not None) and (len(holdout_bases) > 0) and (ep % 50 == 0)
+
+        if do_eval:
             if device.type == "cuda": torch.cuda.synchronize()
             t0_test = time.perf_counter()
 
             model.eval()
-            row = {"epoch":ep}
+            row = {"epoch": ep}
             mses = []
 
             for base in holdout_bases:
@@ -546,19 +552,15 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
                 if p is None:
                     continue
 
-                dl = load_and_preprocess(p["train_like"], p["test"], d = svd_d)
+                dl = load_and_preprocess(p["train_like"], p["test"], d=svd_d)
 
                 with torch.no_grad():
                     pred_scaled = model(dl).view(-1)
                     phi_t = dl[0].phi.to(device).view(-1)
                     total_util_t = dl[0].total_util.to(device)
                     N_t = phi_t.numel()
-                    phi_t_scaled = phi_t * (N_t / total_util_t)
-                    # m = F.mse_loss(pred_scaled, phi_t_scaled, reduction="mean").item()
-                    c_w = 2
-                    w = torch.exp(-phi_t_scaled / c_w)
-                    # w = torch.clamp(w, 0.1, 10.0)  # recommended safety
-                    m = torch.mean(w * (pred_scaled - phi_t_scaled) ** 2).item()
+                    pred_phi = pred_scaled * (total_util_t / N_t)
+                    m = F.mse_loss(pred_phi, phi_t, reduction="mean").item()
 
                 row[base] = m
                 mses.append(m)
@@ -573,17 +575,17 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
         else:
             test_time_hist.append(0.0)
 
-        if (ep % log_every == 0) or (ep == 1) or (ep == epochs):
-            if avg_mse is None:
-                print(f"Epoch {ep:5d} | Train MSE: {L.item():.8e}")
-            else:
-                print(f"Epoch {ep:5d} | Train MSE: {L.item():.8e} | Test MSE: {avg_mse:.8e}")
+        if avg_mse is None:
+            print(f"Epoch {ep:5d} | Train MSE(phi): {Lm.item():.8e} | Train wLoss(scaled): {L.item():.8e}")
+        else:
+            print(
+                f"Epoch {ep:5d} | Train MSE(phi): {Lm.item():.8e} | Train wLoss(scaled): {L.item():.8e} | Test MSE(phi): {avg_mse:.8e}")
 
     if out_dir:
         xs = np.arange(len(loss_history))
         ys = np.array(loss_history)
         ## Save training mse
-        pd.DataFrame({"epoch": xs + 1, "train_mse": ys}).to_csv(os.path.join(out_dir, "Training_MSE.csv"), index = False)
+        pd.DataFrame({"epoch": xs + 1, "train_mse": train_mse_phi_hist}).to_csv(os.path.join(out_dir, "Training_MSE.csv"), index = False)
         ## Save train & test time
         time_txt = os.path.join(out_dir, "Train_Test_Time.txt")
         with open(time_txt, "w") as f:
@@ -596,7 +598,7 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
             csv_full = os.path.join(out_dir, "Holdout_MSE_Full.csv")
             df_full.to_csv(csv_full, index = False); print("saved to:", csv_full)
 
-            df_train_full = pd.DataFrame({"epoch": xs + 1, "train_mse": ys})
+            df_train_full = pd.DataFrame({"epoch": xs + 1, "train_mse": train_mse_phi_hist})
             df_tt = df_full.merge(df_train_full, on = "epoch", how = "left")
             df_tt = df_tt[df_tt["epoch"] >= 20]
 
@@ -620,7 +622,6 @@ def train(model, dataset_graphs, epochs=500, lr=1e-5, weight_decay=1e-7, base_te
 
     return loss_history
 
-
 '''
 6. Prediction
 '''
@@ -632,7 +633,6 @@ def predict(model, data_list):
         N = data_list[0].x.size(0)
         descaled = yhat_scaled * (total_util / N)
         return descaled.cpu().numpy()
-
 
 '''
 7. Supplementary Functions
@@ -944,7 +944,6 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
                        out_dir=test_dir, a=a, b=b, ylim=ylim, random_iters=random_iters)
     return gnn
 
-
 #####################################################################################################
 #####################################################################################################
 ########################################  Experiments ###############################################
@@ -952,13 +951,13 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260120/Trial1'
-    HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_17xxx_2', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260123/Trial0'
+    HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
         in_channels=FEAT_DIM, hidden_channels=64, heads=2,
-        epochs=700, lr=1e-5, weight_decay=1e-7,
+        epochs=2, lr=1e-5, weight_decay=1e-7,
         scheduler_type="None", step_size=50, step_gamma = 0.5
     )
 

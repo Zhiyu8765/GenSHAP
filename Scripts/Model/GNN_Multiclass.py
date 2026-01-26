@@ -908,13 +908,13 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260112/Trial1'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260123/Trial0'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1']
 
     _ = train_then_diagnose(
         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
         in_channels=FEAT_DIM, hidden_channels=64, heads=2,
-        epochs=700, lr=1e-5, weight_decay=1e-7,
+        epochs=2, lr=1e-5, weight_decay=1e-7,
         scheduler_type="None", step_size=50, step_gamma = 0.5
     )
 
