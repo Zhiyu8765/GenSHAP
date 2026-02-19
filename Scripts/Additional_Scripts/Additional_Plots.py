@@ -1152,3 +1152,469 @@ handles = [
 plt.legend(handles=handles, title=TARGET_COL, bbox_to_anchor=(1.02, 1), loc="upper left")
 
 plt.show()
+
+
+
+########################################################################################################################
+########################################################################################################################
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Task 1) Removal + Addition plots (4 plots per holdout set), each plot has 6 lines:
+    - Pred_A, Pred_B, Pred_C, Pred_D (from column Pred_Shap in the corresponding files)
+    - PerDShap (from column PerDShap)
+    - Random baseline (avg over random_iters)
+Task 2) Noisy label detection with 10% manual flips and k-means rule:
+    - KMeans k=2 on 1D values
+    - noisy if value < min(cluster_centers)
+    - report F1 for A,B,C,D,PerDShap
+
+Expected files in comparison_dir:
+    characters_048_1_Pred_A.(csv|parquet|pkl)
+    characters_048_1_Pred_B.(csv|parquet|pkl)
+    ...
+and similarly for the 6 holdout bases you listed.
+
+Assumptions about each file:
+    - It contains training-set rows (same row order across A/B/C/D for the same base)
+    - Columns include:
+        * 'target' (binary/int labels)
+        * 'Pred_Shap' (predicted data value for that variant)
+        * 'PerDShap' (baseline valuation)
+    - Feature columns are numeric columns excluding known non-feature columns.
+"""
+
+import os
+import glob
+import argparse
+import warnings
+from typing import Dict, Tuple, List
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.cluster import KMeans
+from sklearn.metrics import f1_score, accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+
+# ---- Import your helper removal-plot function (attached) ----
+# Make sure PerformancePlots_4lines.py is in the same folder as this script,
+# or provide --helper_path to point to it.
+import importlib.util
+
+
+# ----------------------------
+# Utilities: IO + feature pick
+# ----------------------------
+SUPPORTED_EXTS = (".csv", ".parquet", ".pkl", ".pickle")
+
+
+def load_table(path: str) -> pd.DataFrame:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".csv":
+        return pd.read_csv(path)
+    if ext == ".parquet":
+        return pd.read_parquet(path)
+    if ext in (".pkl", ".pickle"):
+        return pd.read_pickle(path)
+    raise ValueError(f"Unsupported extension: {ext} for {path}")
+
+
+def find_file(comparison_dir: str, base: str, variant: str) -> str:
+    """
+    Find file like: {base}_Pred_{variant}.* among supported extensions.
+    """
+    pattern = os.path.join(comparison_dir, f"{base}_Pred_{variant}*")
+    candidates = []
+    for p in glob.glob(pattern):
+        if os.path.isfile(p) and os.path.splitext(p)[1].lower() in SUPPORTED_EXTS:
+            candidates.append(p)
+    if len(candidates) == 0:
+        raise FileNotFoundError(f"No file found for pattern {pattern} with exts {SUPPORTED_EXTS}")
+    if len(candidates) > 1:
+        # pick the first deterministically
+        candidates = sorted(candidates)
+    return candidates[0]
+
+
+def infer_feature_columns(df: pd.DataFrame,
+                          exclude: List[str] = None) -> List[str]:
+    """
+    Infer feature columns as numeric columns excluding label/value columns.
+    """
+    if exclude is None:
+        exclude = []
+    exclude_set = set(exclude)
+
+    # keep only numeric cols
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    feat_cols = [c for c in num_cols if c not in exclude_set]
+    if len(feat_cols) == 0:
+        raise ValueError("No numeric feature columns found after exclusion. "
+                         "Please edit infer_feature_columns() to match your schema.")
+    return feat_cols
+
+
+# -----------------------------------------
+# Addition curve (analogous to removal curve)
+# -----------------------------------------
+def performance_curve_addition(vals: np.ndarray,
+                               X_train: np.ndarray,
+                               y_train: np.ndarray,
+                               X_test: np.ndarray,
+                               y_test: np.ndarray,
+                               a: float,
+                               b: float,
+                               order: str = "descending") -> Tuple[List[float], np.ndarray]:
+    """
+    Build an addition curve by starting from empty and adding points by value order.
+    order='descending' => add highest first; order='ascending' => add lowest first.
+    Returns (addition_percentages, curve_accuracy_array).
+    """
+    n = len(X_train)
+    total_add = int(np.floor(b * n))
+    step_add  = max(1, int(np.floor(a * n)))
+    add_counts = list(range(0, total_add + 1, step_add))
+    add_percentages = [100 * r / n for r in add_counts]
+
+    order_idx = np.argsort(vals)
+    if order != "ascending":
+        order_idx = order_idx[::-1]
+
+    curve = []
+    for r in add_counts:
+        if r == 0:
+            # no data: majority dummy (or random). We'll do majority=most common in y_train.
+            maj = int(pd.Series(y_train).mode().iloc[0])
+            dummy = np.full_like(y_test, maj)
+            curve.append(accuracy_score(y_test, dummy))
+            continue
+
+        use = order_idx[:r]
+        X_sub, y_sub = X_train[use], y_train[use]
+
+        if len(np.unique(y_sub)) < 2:
+            dummy = np.full_like(y_test, y_sub[0])
+            curve.append(accuracy_score(y_test, dummy))
+            continue
+
+        model = LogisticRegression(max_iter=200, random_state=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(X_sub, y_sub)
+        curve.append(accuracy_score(y_test, model.predict(X_test)))
+
+    return add_percentages, np.asarray(curve)
+
+
+def random_baseline_addition(X_train, y_train, X_test, y_test, a, b, random_iters=10) -> Tuple[List[float], np.ndarray]:
+    n = len(X_train)
+    total_add = int(np.floor(b * n))
+    step_add  = max(1, int(np.floor(a * n)))
+    add_counts = list(range(0, total_add + 1, step_add))
+    add_percentages = [100 * r / n for r in add_counts]
+
+    curves = []
+    for _ in range(random_iters):
+        perm = np.random.permutation(n)
+        curve = []
+        for r in add_counts:
+            if r == 0:
+                maj = int(pd.Series(y_train).mode().iloc[0])
+                dummy = np.full_like(y_test, maj)
+                curve.append(accuracy_score(y_test, dummy))
+                continue
+
+            use = perm[:r]
+            X_sub, y_sub = X_train[use], y_train[use]
+
+            if len(np.unique(y_sub)) < 2:
+                dummy = np.full_like(y_test, y_sub[0])
+                curve.append(accuracy_score(y_test, dummy))
+                continue
+
+            model = LogisticRegression(max_iter=200, random_state=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model.fit(X_sub, y_sub)
+            curve.append(accuracy_score(y_test, model.predict(X_test)))
+
+        curves.append(curve)
+
+    return add_percentages, np.mean(np.asarray(curves), axis=0)
+
+
+# ----------------------------
+# Noisy label detection
+# ----------------------------
+def flip_labels(y: np.ndarray, flip_frac: float, seed: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Flip flip_frac of labels. Assumes binary labels {0,1} or {-1,1} or general 2-class ints.
+    Returns (y_flipped, flipped_mask_boolean).
+    """
+    rng = np.random.default_rng(seed)
+    y = np.asarray(y).copy()
+    n = len(y)
+    k = int(np.floor(flip_frac * n))
+    idx = rng.choice(n, size=k, replace=False)
+
+    classes = np.unique(y)
+    if len(classes) != 2:
+        raise ValueError(f"Expected binary labels, got classes={classes}")
+
+    # Flip by swapping to the other class
+    c0, c1 = classes[0], classes[1]
+    y[idx] = np.where(y[idx] == c0, c1, c0)
+
+    mask = np.zeros(n, dtype=bool)
+    mask[idx] = True
+    return y, mask
+
+
+def kmeans_noisy_detector(values: np.ndarray, seed: int = 0) -> np.ndarray:
+    """
+    KMeans k=2 on 1D values; mark noisy if value < min(cluster_centers).
+    Returns boolean mask of predicted noisy points.
+    """
+    v = np.asarray(values).reshape(-1, 1)
+    km = KMeans(n_clusters=2, random_state=seed, n_init=10)
+    km.fit(v)
+    centers = km.cluster_centers_.reshape(-1)
+    thr = centers.min()
+    return (v.reshape(-1) < thr)
+
+
+# ----------------------------
+# Main plotting per holdout base
+# ----------------------------
+def plot_six_lines_generic(x_pct: List[float],
+                           curves: Dict[str, np.ndarray],
+                           xlabel: str,
+                           ylabel: str,
+                           title: str,
+                           save_path: str = None):
+    plt.rcParams.update({
+        "font.size": 24,
+        "axes.titlesize": 24,
+        "axes.labelsize": 24,
+        "xtick.labelsize": 22,
+        "ytick.labelsize": 22,
+        "legend.fontsize": 18,
+    })
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=150, layout="constrained")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+
+    for name, c in curves.items():
+        ax.plot(x_pct, c * 100.0, lw=4, marker="o", label=name)
+
+    ax.grid(True)
+    ax.legend(loc="best")
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, format="pdf")
+    plt.show()
+    plt.close(fig)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--comparison_dir", type=str, required=True,
+                        help="Directory containing {base}_Pred_{A|B|C|D} files.")
+    parser.add_argument("--helper_path", type=str, default="PerformancePlots_4lines.py",
+                        help="Path to PerformancePlots_4lines.py (contains PerformancePlot_Removal).")
+    parser.add_argument("--out_dir", type=str, default=None,
+                        help="Output directory for PDFs. Default: <comparison_dir>/Plots")
+    parser.add_argument("--a", type=float, default=0.05,
+                        help="Step fraction (e.g., 0.05 means 5%% of training each step).")
+    parser.add_argument("--b", type=float, default=0.40,
+                        help="Total fraction to remove/add (e.g., 0.40 means up to 40%%).")
+    parser.add_argument("--random_iters", type=int, default=10,
+                        help="Random baseline iterations.")
+    parser.add_argument("--flip_frac", type=float, default=0.10,
+                        help="Fraction of labels to flip for noisy-label experiment.")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Random seed for reproducibility.")
+    parser.add_argument("--test_size", type=float, default=0.30,
+                        help="Train/test split for plotting performance curves (proxy holdout).")
+    args = parser.parse_args()
+
+    comparison_dir = args.comparison_dir
+    out_dir = args.out_dir or os.path.join(comparison_dir, "Plots")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Dynamic import of helper
+    spec = importlib.util.spec_from_file_location("perfplots", args.helper_path)
+    perfplots = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(perfplots)
+    PerformancePlot_Removal = perfplots.PerformancePlot_Removal
+
+    holdout_bases = [
+        "characters_048_1",
+        "Iris_1",
+        "STL10_3568x_3",
+        "Vehicle_01_1",
+        "Volkert_15_2",
+        "Volkert_1245_1",
+    ]
+    variants = ["A", "B", "C", "D"]
+
+    # Collect noisy-label detection results
+    noisy_rows = []
+
+    for base in holdout_bases:
+        # ---- load A/B/C/D dataframes ----
+        dfs = {}
+        for v in variants:
+            fpath = find_file(comparison_dir, base, v)
+            dfs[v] = load_table(fpath)
+
+        # Basic schema checks
+        for v in variants:
+            if "Pred_Shap" not in dfs[v].columns:
+                raise KeyError(f"[{base} Pred_{v}] missing column 'Pred_Shap'")
+            if "target" not in dfs[v].columns:
+                raise KeyError(f"[{base} Pred_{v}] missing column 'target'")
+
+        # Use variant A as reference for shared columns like PerDShap/features
+        df0 = dfs["A"].copy()
+        if "PerDShap" not in df0.columns:
+            raise KeyError(f"[{base}] missing column 'PerDShap' in Pred_A file (used as reference).")
+
+        # Ensure row alignment across variants (best-effort)
+        n0 = len(df0)
+        for v in variants[1:]:
+            if len(dfs[v]) != n0:
+                raise ValueError(f"[{base}] row-count mismatch: Pred_A has {n0}, Pred_{v} has {len(dfs[v])}")
+
+        # Feature columns inference
+        exclude_cols = ["target", "Pred_Shap", "PerDShap"]
+        feat_cols = infer_feature_columns(df0, exclude=exclude_cols)
+
+        X = df0[feat_cols].to_numpy()
+        y = df0["target"].to_numpy()
+
+        # Proxy split: since files are "holdout test set" specific but do not include raw held-out features explicitly,
+        # we use a deterministic train/test split here to produce consistent diagnostic curves.
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=args.test_size, random_state=args.seed, stratify=y
+        )
+
+        # Build value arrays aligned to X_train indices
+        # We must index the same rows used in X_train. train_test_split returns views by row order,
+        # but not indices. So we re-create indices via a split on indices.
+        idx = np.arange(len(df0))
+        idx_train, idx_test = train_test_split(
+            idx, test_size=args.test_size, random_state=args.seed, stratify=y
+        )
+
+        vals_map = {
+            "Pred_A": dfs["A"].loc[idx_train, "Pred_Shap"].to_numpy(),
+            "Pred_B": dfs["B"].loc[idx_train, "Pred_Shap"].to_numpy(),
+            "Pred_C": dfs["C"].loc[idx_train, "Pred_Shap"].to_numpy(),
+            "Pred_D": dfs["D"].loc[idx_train, "Pred_Shap"].to_numpy(),
+            "PerDShap": df0.loc[idx_train, "PerDShap"].to_numpy(),
+        }
+
+        # Subset train arrays to idx_train
+        X_train2 = X[idx_train]
+        y_train2 = y[idx_train]
+        X_test2  = X[idx_test]
+        y_test2  = y[idx_test]
+
+        # --------------------------
+        # Task 1: Removal plots (2)
+        # --------------------------
+        for order in ["descending", "ascending"]:
+            save_path = os.path.join(out_dir, f"{base}_Removal_{order}.pdf")
+            # helper automatically adds its own random baseline line named 'Random'
+            _ = PerformancePlot_Removal(
+                vals=vals_map,
+                X_train=X_train2, y_train=y_train2,
+                X_test=X_test2, y_test=y_test2,
+                a=args.a, b=args.b,
+                order=order,
+                random_iters=args.random_iters,
+                ylim=None,
+                Names=list(vals_map.keys()),
+                save_path=save_path
+            )
+
+        # --------------------------
+        # Task 1: Addition plots (2)
+        # --------------------------
+        for order in ["descending", "ascending"]:
+            curves = {}
+            x_pct_ref = None
+
+            # methods
+            for name, v in vals_map.items():
+                x_pct, c = performance_curve_addition(
+                    vals=v, X_train=X_train2, y_train=y_train2, X_test=X_test2, y_test=y_test2,
+                    a=args.a, b=args.b, order=order
+                )
+                curves[name] = c
+                if x_pct_ref is None:
+                    x_pct_ref = x_pct
+
+            # random baseline
+            x_pct_r, c_r = random_baseline_addition(
+                X_train2, y_train2, X_test2, y_test2,
+                a=args.a, b=args.b, random_iters=args.random_iters
+            )
+            curves["Random"] = c_r
+
+            save_path = os.path.join(out_dir, f"{base}_Addition_{order}.pdf")
+            plot_six_lines_generic(
+                x_pct=x_pct_ref,
+                curves=curves,
+                xlabel="Fraction of data added (%)",
+                ylabel="Accuracy (%)",
+                title=f"{base} | Addition ({order})",
+                save_path=save_path
+            )
+
+        # --------------------------------
+        # Task 2: Noisy label detection (F1)
+        # --------------------------------
+        # Flip labels on *training portion* only (idx_train), and evaluate detection on that same set.
+        y_train_clean = y_train2.copy()
+        y_train_noisy, flipped_mask = flip_labels(y_train_clean, flip_frac=args.flip_frac, seed=args.seed)
+
+        # run detector per method on values (1D) on training subset
+        for method_name, v in vals_map.items():
+            pred_noisy = kmeans_noisy_detector(v, seed=args.seed)
+            f1 = f1_score(flipped_mask.astype(int), pred_noisy.astype(int), zero_division=0)
+            noisy_rows.append({
+                "holdout_base": base,
+                "method": method_name,
+                "flip_frac": args.flip_frac,
+                "f1": float(f1),
+                "n_train": int(len(y_train_clean)),
+                "n_flipped": int(flipped_mask.sum()),
+                "n_pred_noisy": int(pred_noisy.sum()),
+            })
+
+    # Save noisy-label summary
+    noisy_df = pd.DataFrame(noisy_rows)
+    noisy_csv = os.path.join(out_dir, "NoisyLabelDetection_F1.csv")
+    noisy_df.to_csv(noisy_csv, index=False)
+
+    # Also print a compact summary (mean F1 across holdouts)
+    summary = (noisy_df
+               .groupby("method")["f1"]
+               .agg(["mean", "std", "count"])
+               .reset_index()
+               .sort_values("mean", ascending=False))
+    print("\n=== Noisy Label Detection (F1) Summary across holdouts ===")
+    print(summary.to_string(index=False))
+    print(f"\nSaved per-holdout F1 to: {noisy_csv}")
+    print(f"Plots saved under: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,7 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import re
 import dgl
 import torch
@@ -154,6 +154,11 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     K = int(np.unique(y).size)
     k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=np.float32)    # (N, 3)
     data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float32, device = device)
+
+    ## Inject total utility
+    u = float(total_util)
+    u_vec = np.array([u, 1.0/max(u, 1e-12)], dtype = np.float32)  # (2,)
+    data.u_feat = torch.tensor(np.tile(u_vec, (N, 1)), dtype=torch.float32, device = device)
 
     ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics
     data.loo_z = torch.tensor(loo_z, dtype=torch.float32, device = device)
@@ -362,7 +367,7 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
 
 ' Version B. Parallel GIN & GT '
 class GINShap(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels = 128, out_channels = 1, heads = 4,
+    def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2,
                  gin_layers = 2, gt_layers = 2):
         super().__init__()
         def mlp(i, o):
@@ -393,7 +398,7 @@ class GINShap(torch.nn.Module):
         self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
 
         self.out = Sequential(
-            Linear( (hidden_channels * 2) + 3, hidden_channels * 2),
+            Linear( (hidden_channels * 2) + 3 + 2, hidden_channels * 2),
             ReLU(),
             Linear(hidden_channels * 2, 100),
             ReLU(),
@@ -433,7 +438,7 @@ class GINShap(torch.nn.Module):
         h_gt = self.Z_gt(gt_out)
 
         h_fused = torch.cat([h_gin, h_gt], dim=1)
-        h_plus = torch.cat([h_fused, data0.k_feat], dim = 1)
+        h_plus = torch.cat([h_fused, data0.k_feat, data0.u_feat], dim = 1)
         return self.out(h_plus)
 
 '''
@@ -592,8 +597,18 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
             # w = torch.clamp(w, 0.1, 10.0)
             # wloss = torch.mean(w * (phi_hat_scaled - phi_true_scaled) ** 2)
 
-            ## Training with KDE Weighted MSE:
-            sigma_kde = float(phi_true_scaled.mean().item())
+            # ## Training with KDE Weighted MSE:
+            # sigma_kde = float(phi_true_scaled.mean().item())
+            # sigma_kde = max(sigma_kde, 1e-12)
+            # w = KDE_weights(phi_true_scaled, sigma=sigma_kde)
+            # wloss = torch.sum(w * (phi_hat_scaled - phi_true_scaled) ** 2)
+
+            ## Training with KDE Weighted MSE(sigma = mean of pairwise distance):
+            y1 = phi_true_scaled.view(-1, 1)
+            if y1.size(0) >= 2:
+                sigma_kde = float(torch.pdist(y1, p = 2).median().item())
+            else:
+                sigma_kde = 1e-12
             sigma_kde = max(sigma_kde, 1e-12)
             w = KDE_weights(phi_true_scaled, sigma=sigma_kde)
             wloss = torch.sum(w * (phi_hat_scaled - phi_true_scaled) ** 2)
@@ -1007,7 +1022,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260126/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260128/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
