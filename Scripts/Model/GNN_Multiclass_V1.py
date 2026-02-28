@@ -125,7 +125,6 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z], axis=1)  # (N, 9)
     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
 
-
     ## Fully connected graph
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)

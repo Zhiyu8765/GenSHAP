@@ -74,10 +74,10 @@ MEM_DIR = '../'
 '''
 1. Load Data
 '''
-TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Vehicle/Vehicle_01_1"
-TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Vehicle/Vehicle_01_test_1"
-TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Vehicle/Vehicle_01_TMC_1"
-OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Vehicle"
+TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Volkert_Multi/volkert_1245_1.csv"
+TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Volkert_Multi/volkert_1245_test_1.csv"
+TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Volkert_Multi/volkert_1245_TMC_1.csv"
+OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Volkert_Multi"
 LABEL_COL = "target"
 runtimes = {}
 df_train = pd.read_csv(TRAIN_CSV)
@@ -321,9 +321,9 @@ shapley_df = pd.DataFrame({
 
 
 # Save runtime
-pd.DataFrame([runtimes]).to_csv(os.path.join(OUT_DIR, "Vehicle_01_1_runtimes.csv"), index=False)
+pd.DataFrame([runtimes]).to_csv(os.path.join(OUT_DIR, "volkert_1245_1_runtimes.csv"), index=False)
 
 # Save combined predictions and valuations
 df_train = df_train.reset_index(drop=True)
 combined_df = pd.concat([df_train, shapley_df], axis=1)
-combined_df.to_csv(os.path.join(OUT_DIR, "Vehicle_01_1_all_baselines.csv"), index=False)
+combined_df.to_csv(os.path.join(OUT_DIR, "volkert_1245_1_all_baselines.csv"), index=False)
