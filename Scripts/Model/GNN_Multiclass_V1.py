@@ -1,3 +1,4 @@
+''' Model architecture of this verison: 6 GIN branches // 1 Transformer branch'''
 '''
 0. Import Packages
 '''
@@ -367,13 +368,8 @@ class GINShap(torch.nn.Module):
         self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
 
         extra_dim = EXTRA_DIM
-        self.extra_mlp = Sequential(Linear(extra_dim, hidden_channels),
-                                    ReLU(),
-                                    Linear(hidden_channels, hidden_channels),
-                                    ReLU(),
-                                    ).to(device)
         self.out = Sequential(
-            Linear( (hidden_channels * 3) + 3 + 2, hidden_channels * 2),
+            Linear((hidden_channels * 2) + extra_dim + 3 + 2, hidden_channels * 2),
             ReLU(),
             Linear(hidden_channels * 2, 100),
             ReLU(),
@@ -384,6 +380,8 @@ class GINShap(torch.nn.Module):
         data0 = data_list[0]
         x0 = data0.x
         N = x0.size(0)
+
+        ### GIN Branches
         output_GIN = []
         for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
             node_input = gdata.x
@@ -404,17 +402,21 @@ class GINShap(torch.nn.Module):
 
             output_GIN.append(node_input)
 
+        c1_idx = C_List.index(1)
+        data1 = data_list[c1_idx]
+        x_skip = data1.x
         gin_cat = torch.cat(output_GIN, dim = 1)
-        gin_cat = gin_cat + self.skip_lin(x0)
+        gin_cat = gin_cat + self.skip_lin(x_skip)
         h_gin = self.Z_gin(gin_cat)
 
-        gt_in = self.pre_gt(x0).unsqueeze(0)
+        ### Transformer branch
+        x_gt = data_list[c1_idx].x
+        gt_in = self.pre_gt(x_gt).unsqueeze(0)
         gt_out = self.gt(gt_in).squeeze(0)
         h_gt = self.Z_gt(gt_out)
 
-        h_extra = self.extra_mlp(data0.extra)
-        h_fused = torch.cat([h_gin, h_gt, h_extra], dim=1)
-        h_plus = torch.cat([h_fused, data0.k_feat, data0.u_feat], dim = 1)
+        h_fused = torch.cat([h_gin, h_gt], dim = 1)
+        h_plus = torch.cat([h_fused, data1.extra, data1.k_feat, data1.u_feat], dim=1)
         return self.out(h_plus)
 
 '''
@@ -998,7 +1000,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260211/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260301/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(

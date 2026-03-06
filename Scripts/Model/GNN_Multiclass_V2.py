@@ -1,3 +1,5 @@
+''' Model architecture of this verison: 6 GIN branches // 6 Transformer branches'''
+'''Extra features are processed in final prediction head.'''
 '''
 0. Import Packages
 '''
@@ -86,7 +88,8 @@ def flip_pe_sign(x, method='sum'):
 
 'SVD'
 svd_d = 100
-FEAT_DIM = svd_d + 16  # Gradient Norm + Grad Error + 7 KNN Ratios + 7 Cluster Ratios
+FEAT_DIM = svd_d
+EXTRA_DIM = 9  # Gradient Norm + Grad Error + 7 KNN Ratios
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -107,8 +110,8 @@ C_List = [0.25, 0.5, 1, 2, 4, 8]
 def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
                 total_util: float, c: float, *, D: np.ndarray, sigma: float,
                 grad_norm_z: np.ndarray, grad_err_z: np.ndarray,
-                knn_ratio_z: np.ndarray, cluster_ratio_z:np.ndarray, d: int = svd_d,
-                weight_extra: float = 3.0) -> Data:
+                knn_ratio_z: np.ndarray,
+                d: int = svd_d, weight_extra: float = 3.0) -> Data:
     ## Gaussian Kernel Adjacency
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy = False)
     X_svd = SVD_Transform(A, d = d).astype(np.float32, copy = False)
@@ -119,11 +122,10 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     grad_norm_z = np.asarray(grad_norm_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
     grad_err_z = np.asarray(grad_err_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
     knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 7)
-    cluster_ratio_z = np.asarray(cluster_ratio_z, dtype = np.float32) # (N, 7)
+
     ## Weighted Injected Features
-    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z, cluster_ratio_z], axis=1)  # (N, 16)
+    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z], axis=1)  # (N, 9)
     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
-    X_node = np.concatenate([X_svd, extra_feats], axis=1).astype(np.float32, copy=False)
 
     ## Fully connected graph
     N = X_raw.shape[0]
@@ -137,7 +139,7 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype=torch.float32, device = device).unsqueeze(1)
 
     data = Data(
-        x=torch.tensor(X_node, dtype=torch.float32, device = device),
+        x=torch.tensor(X_svd, dtype=torch.float32, device = device),
         edge_index=edge_index,
         edge_attr_feat=edge_attr_feat,
         edge_attr_label=edge_attr_label
@@ -147,6 +149,7 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     data.phi = torch.tensor(phi, dtype=torch.float32, device = device)
     data.total_util = torch.tensor(total_util, dtype=torch.float32, device = device)
     data.y = torch.tensor(y_raw, dtype=torch.long, device = device)
+    data.extra = torch.tensor(extra_feats, dtype = torch.float32, device = device)
 
     ## Record number of classes of each dataset
     K = int(np.unique(y).size)
@@ -162,7 +165,7 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float32, device = device)
     data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float32, device = device)
     data.knn_ratio_z = torch.tensor(knn_ratio_z, dtype=torch.float32, device = device)
-    data.cluster_ratio_z = torch.tensor(cluster_ratio_z, dtype=torch.float32, device = device)
+
     return data
 
 '''
@@ -207,26 +210,6 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     knn_ratios = [diff[:, :k].mean(axis=1) for k in K_List]
     knn_ratio_feat = np.stack(knn_ratios, axis=1)
     knn_ratio_z = np.column_stack([_standardize(knn_ratio_feat[:, i]) for i in range(knn_ratio_feat.shape[1])]).astype(np.float32, copy = False)
-
-    ## Cluster Ratios
-    N = X_raw.shape[0]
-    n_clusters = int(min(50, max(10, int(np.sqrt(N)))))
-    n_clusters = min(n_clusters, N - 1)
-    km = MiniBatchKMeans(n_clusters = n_clusters, random_state = 0, batch_size = 2048, n_init = "auto")
-    cluster_id = km.fit_predict(X_raw)
-    neigh_cluster_all = cluster_id[nn_idx]
-    cluster_ratios = []
-    for k in K_List:
-        neigh_k = neigh_cluster_all[:, :k]
-        neigh_sorted = np.sort(neigh_k, axis = 1)
-        distinct_counts = 1 + np.sum(neigh_sorted[:, 1:] != neigh_sorted[:, :-1], axis = 1)
-        cluster_ratios.append(distinct_counts.astype(np.float64)/float(k))
-
-    cluster_ratio_feat = np.stack(cluster_ratios, axis = 1)
-
-    cluster_ratio_z =  np.column_stack(
-        [_standardize(cluster_ratio_feat[:, i]) for i in range(cluster_ratio_feat.shape[1])]
-    ).astype(np.float32, copy=False)
 
     ## Algorithm: Logistic Regression
     lr_full = LogisticRegression(max_iter = 200, random_state=23)
@@ -275,7 +258,6 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
             grad_norm_z = grad_norm_z,
             grad_err_z = grad_err_z,
             knn_ratio_z = knn_ratio_z,
-            cluster_ratio_z = cluster_ratio_z,
             d=d
         )
         data_list.append(data)
@@ -357,7 +339,7 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
 ' Version B. Parallel GIN & GT '
 class GINShap(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels = 64, out_channels = 1, heads = 2,
-                 gin_layers = 2, gt_layers = 2):
+                 gin_layers = 2, gt_layers = 2, gt_d_model = 128):
         super().__init__()
         def mlp(i, o):
             return Sequential(Linear(i, o), LayerNorm(o), ReLU(), Linear(o, o))
@@ -376,18 +358,28 @@ class GINShap(torch.nn.Module):
             self.branches.append(convs)
 
         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List)).to(device)
-        d_concat = hidden_channels * len(C_List)
+        d_concat = hidden_channels * len(C_List) # 64 * 6 = 384
 
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
+        self.Z_gin = Sequential(
+            Linear(d_concat, hidden_channels),
+            ReLU()
+        ).to(device)
+
+        ### Transformer block
+        if gt_d_model is None:
+            gt_d_model = d_concat
+
+        assert gt_d_model % heads == 0, "gt_d_model should be a multiple of heads"
+        self.pre_gt = Linear(in_channels, gt_d_model).to(device)
+        encoder_layer = TransformerEncoderLayer(d_model=gt_d_model, nhead=heads, dropout=0.0, batch_first = True)
         self.gt = TransformerEncoder(encoder_layer, num_layers = gt_layers).to(device)
+        self.Z_gt = Sequential(Linear(gt_d_model, hidden_channels), ReLU()).to(device)
 
-        self.pre_gt = Linear(in_channels, d_concat).to(device)
+        self.fuse_gt = Linear(hidden_channels * len(C_List), hidden_channels).to(device)
 
-        self.Z_gin = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
-        self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
-
+        extra_dim = EXTRA_DIM
         self.out = Sequential(
-            Linear( (hidden_channels * 2) + 3 + 2, hidden_channels * 2),
+            Linear((hidden_channels * 2) + extra_dim + 3 + 2, hidden_channels * 2),
             ReLU(),
             Linear(hidden_channels * 2, 100),
             ReLU(),
@@ -395,9 +387,11 @@ class GINShap(torch.nn.Module):
         ).to(device)
 
     def forward(self, data_list):
-        data0 = data_list[0]
-        x0 = data0.x
-        N = x0.size(0)
+        c1_idx = C_List.index(1)
+        data1 = data_list[c1_idx]
+        N = data1.x.size(0)
+
+        ### GIN Branches
         output_GIN = []
         for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
             node_input = gdata.x
@@ -418,16 +412,24 @@ class GINShap(torch.nn.Module):
 
             output_GIN.append(node_input)
 
-        gin_cat = torch.cat(output_GIN, dim = 1)
-        gin_cat = gin_cat + self.skip_lin(x0)
-        h_gin = self.Z_gin(gin_cat)
+        gin_cat = torch.cat(output_GIN, dim=1)  # (N, 384) when hidden_channels = 64
+        gin_cat = gin_cat + self.skip_lin(data1.x)  # (N, 384) when hidden_channels = 64
+        h_gin = self.Z_gin(gin_cat)  # (N, 64) when hidden_channels = 64
 
-        gt_in = self.pre_gt(x0).unsqueeze(0)
-        gt_out = self.gt(gt_in).squeeze(0)
-        h_gt = self.Z_gt(gt_out)
+        ### 6 Transformer branches (shared weights, each corresponding to c in C_List)
+        h_gt_list = []
+        for gdata in data_list:  # 6 graphs
+            x = gdata.x  # (N, 100) from that c
+            gt_in = self.pre_gt(x).unsqueeze(0)  # (1, N, gt_d_model)
+            gt_out = self.gt(gt_in).squeeze(0)  # (N, gt_d_model)
+            h_gt_i = self.Z_gt(gt_out)  # (N, 64)
+            h_gt_list.append(h_gt_i)
 
-        h_fused = torch.cat([h_gin, h_gt], dim=1)
-        h_plus = torch.cat([h_fused, data0.k_feat, data0.u_feat], dim = 1)
+        h_gt_cat = torch.cat(h_gt_list, dim=1)  # (N, 64*6=384)
+        h_gt = self.fuse_gt(h_gt_cat)  # (N, 64)
+
+        h_fused = torch.cat([h_gin, h_gt], dim=1)  # (N, 128)
+        h_plus = torch.cat([h_fused, data1.extra, data1.k_feat, data1.u_feat], dim=1)  # (N, 142)
         return self.out(h_plus)
 
 '''
@@ -1011,7 +1013,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260210/Trial02'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260304/Trial03'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
