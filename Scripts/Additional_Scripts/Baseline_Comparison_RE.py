@@ -74,12 +74,12 @@ MEM_DIR = '../'
 '''
 1. Load Data
 '''
-TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris/Iris_1"
-TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris/Iris_test_1"
-TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris/Iris_TMC_1"
-MLP_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris/Iris_1_MLPbV_pred.csv"
-PRED_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris/Iris_1_Pred.csv"
-OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines/Iris"
+TRAIN_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters/characters_048_1.csv"
+TEST_CSV  = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters/characters_048_test_1.csv"
+TMC_CSV   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters/characters_048_TMC_1.csv"
+MLP_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters/characters_048_1_MLPbV_pred.csv"
+PRED_CSV = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters/characters_048_1_Pred.csv"
+OUT_DIR   = "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Baselines_3/Characters"
 LABEL_COL = "target"
 runtimes = {}
 df_train = pd.read_csv(TRAIN_CSV)
@@ -355,7 +355,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score, average_precision_sco
 #    If you already saved all those baselines into one csv, set it here.
 #    Must contain: Delta/Group/Owen/Beta/Banzhaf/Semi/KNN  (and optionally others).
 # -------------------------
-BASELINES_ALL_CSV = os.path.join(OUT_DIR, "Iris_1_all_baselines.csv")  # <-- CHANGE if needed
+BASELINES_ALL_CSV = os.path.join(OUT_DIR, "characters_048_1_all_baselines.csv")  # <-- CHANGE if needed
 if not os.path.exists(BASELINES_ALL_CSV):
     raise FileNotFoundError(
         f"Cannot find BASELINES_ALL_CSV:\n{BASELINES_ALL_CSV}\n"

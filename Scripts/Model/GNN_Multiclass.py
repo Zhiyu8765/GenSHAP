@@ -1,8 +1,10 @@
+''' Model architecture of this verison: 6 GIN branches // 6 Transformer branches'''
+'''Extra features are processed in final prediction head.'''
 '''
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import re
 import dgl
 import torch
@@ -19,6 +21,7 @@ from torch_geometric.data import Data
 from torch.optim.lr_scheduler import StepLR, LambdaLR
 from torch.nn import (Sequential, Linear, ReLU, TransformerEncoder, TransformerEncoderLayer, LayerNorm)
 from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.cluster import MiniBatchKMeans
 from sklearn.linear_model import LogisticRegression
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
 
@@ -85,7 +88,8 @@ def flip_pe_sign(x, method='sum'):
 
 'SVD'
 svd_d = 100
-FEAT_DIM = svd_d + 14  # LOO + Gradient Norm + Grad Error + 6 Statistics + 5 KNN Ratios
+FEAT_DIM = svd_d
+EXTRA_DIM = 10  # Gradient Norm + Grad Error + 7 KNN Ratios + final loss
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -101,31 +105,28 @@ def SVD_Transform(A, d = svd_d):
 '''
 2. Graph Construction
 '''
-C_List = [0.25, 0.5, 1, 2, 4, 8]
+C_List = [0.25, 0.5 , 1, 2, 4]
 
 def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
                 total_util: float, c: float, *, D: np.ndarray, sigma: float,
-                stats_z: np.ndarray, loo_z: np.ndarray,
                 grad_norm_z: np.ndarray, grad_err_z: np.ndarray,
-                knn_ratio_z: np.ndarray, d: int = svd_d,
-                weight_extra: float = 3.0) -> Data:
+                knn_ratio_z: np.ndarray, point_loss_z: np.ndarray,
+                d: int = svd_d, weight_extra: float = 3.0) -> Data:
     ## Gaussian Kernel Adjacency
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy = False)
     X_svd = SVD_Transform(A, d = d).astype(np.float32, copy = False)
     y = np.asarray(y_raw).ravel()
     A_y = (y[:, None] == y[None, :]).astype(np.float32, copy=False)
 
-    ## Injection of LOO + Gradient Norm + Grad Error
-    loo_z = np.asarray(loo_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
+    ## Injection of Gradient Norm + Grad Error + KNN ratio + final loss
     grad_norm_z = np.asarray(grad_norm_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
     grad_err_z = np.asarray(grad_err_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
-    stats_z = np.asarray(stats_z, dtype = np.float32)   # (N, 6)
-    knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 5)
+    knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 7)
+    point_loss_z = np.asarray(point_loss_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
 
     ## Weighted Injected Features
-    extra_feats = np.concatenate([loo_z, grad_norm_z, grad_err_z, stats_z, knn_ratio_z], axis=1)  # (N, 14)
+    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z, point_loss_z], axis=1)  # (N, 9)
     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
-    X_node = np.concatenate([X_svd, extra_feats], axis=1).astype(np.float32, copy=False)
 
     ## Fully connected graph
     N = X_raw.shape[0]
@@ -139,7 +140,7 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype=torch.float32, device = device).unsqueeze(1)
 
     data = Data(
-        x=torch.tensor(X_node, dtype=torch.float32, device = device),
+        x=torch.tensor(X_svd, dtype=torch.float32, device = device),
         edge_index=edge_index,
         edge_attr_feat=edge_attr_feat,
         edge_attr_label=edge_attr_label
@@ -149,10 +150,11 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     data.phi = torch.tensor(phi, dtype=torch.float32, device = device)
     data.total_util = torch.tensor(total_util, dtype=torch.float32, device = device)
     data.y = torch.tensor(y_raw, dtype=torch.long, device = device)
+    data.extra = torch.tensor(extra_feats, dtype = torch.float32, device = device)
 
     ## Record number of classes of each dataset
     K = int(np.unique(y).size)
-    k_vec = np.array([K, 1.0 / max(1, K), np.log1p(K)], dtype=np.float32)    # (N, 3)
+    k_vec = np.array([K, 1/max(1e-12, K), np.log(K)], dtype=np.float32)    # (N, 3)
     data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float32, device = device)
 
     ## Inject total utility
@@ -160,12 +162,11 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     u_vec = np.array([u, 1.0/max(u, 1e-12)], dtype = np.float32)  # (2,)
     data.u_feat = torch.tensor(np.tile(u_vec, (N, 1)), dtype=torch.float32, device = device)
 
-    ## Keep LOO_z, grad_norm_z, grad_err_z for diagnostics
-    data.loo_z = torch.tensor(loo_z, dtype=torch.float32, device = device)
+    ## Keep grad_norm_z, grad_err_z for diagnostics
     data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float32, device = device)
     data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float32, device = device)
-    data.stats_z = torch.tensor(stats_z, dtype=torch.float32, device = device)
     data.knn_ratio_z = torch.tensor(knn_ratio_z, dtype=torch.float32, device = device)
+
     return data
 
 '''
@@ -194,36 +195,8 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     D = pairwise_distances(X_raw, metric='euclidean').astype(np.float32, copy = False)
     sigma = max(float(np.mean(D)), 1e-15)
 
-    ## Injection of row statistics: mean, var, min, max, skewness, kurtosis
-    def _skewness_1d(v, eps=1e-12):
-        v = np.asarray(v)
-        m = v.mean()
-        c = v - m
-        s2 = np.mean(c**2)
-        s = np.sqrt(s2 + eps)
-        return np.mean(c**3) / (s**3 + eps)
-
-    def _kurtosis_1d(v, eps=1e-12):
-        v = np.asarray(v, dtype=float)
-        m = v.mean()
-        c = v - m
-        s2 = np.mean(c ** 2)
-        s4 = (s2 + eps) ** 2
-        return np.mean(c ** 4) / s4 - 3.0
-
-    Xr = np.asarray(X_raw, dtype=np.float64)
-    row_mean = Xr.mean(axis=1)
-    row_var = Xr.var(axis=1)
-    row_min = Xr.min(axis=1)
-    row_max = Xr.max(axis=1)
-    row_skew = np.array([_skewness_1d(Xr[i]) for i in range(Xr.shape[0])], dtype = np.float64)
-    row_kurt = np.array([_kurtosis_1d(Xr[i]) for i in range(Xr.shape[0])], dtype = np.float64)
-
-    stats = np.vstack([row_mean, row_var, row_min, row_max, row_skew, row_kurt]).T  # (N, 6)
-    stats_z = np.column_stack([_standardize(stats[:, j]) for j in range(stats.shape[1])]).astype(np.float32, copy=False)
-
     ## Compute KNN Ratio
-    K_List = [5, 7, 9, 10, 15]
+    K_List = [5, 7, 9, 10, 15, 20, 30]
     max_k = max(K_List)
     D_no_self = D.copy()
     np.fill_diagonal(D_no_self, np.inf)
@@ -263,19 +236,24 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     grad_norm_z = _standardize(grad_norm)
     grad_err_z  = _standardize(grad_err)
 
-    ## Compute LOO values
-    n = X_raw.shape[0]
-    loo_raw = np.zeros(n, dtype=np.float64)
+    ## Compute training loss and loss statistics
+    p_true = np.clip(P[np.arange(n), col_idx], 1e-12, 1)
+    point_loss = -np.log(p_true)
+    point_loss_z = _standardize(point_loss)
 
-    for i in range(n):
-        mask = np.ones(n, dtype=bool)
-        mask[i] = False
-        lr_i = LogisticRegression(max_iter=200, random_state=23)
-        lr_i.fit(X_raw[mask], y_raw[mask])
-        acc_i = lr_i.score(X_test, y_test)
-        loo_raw[i] = model_acc - acc_i  # LOO_i = U(D) - U(D\{i})
-
-    loo_z = _standardize(loo_raw)
+    # ## Compute LOO values
+    # n = X_raw.shape[0]
+    # loo_raw = np.zeros(n, dtype=np.float64)
+    #
+    # for i in range(n):
+    #     mask = np.ones(n, dtype=bool)
+    #     mask[i] = False
+    #     lr_i = LogisticRegression(max_iter=200, random_state=23)
+    #     lr_i.fit(X_raw[mask], y_raw[mask])
+    #     acc_i = lr_i.score(X_test, y_test)
+    #     loo_raw[i] = model_acc - acc_i  # LOO_i = U(D) - U(D\{i})
+    #
+    # loo_z = _standardize(loo_raw)
 
     ## build graphs on device
     data_list = []
@@ -283,10 +261,10 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
         data = build_graph(
             X_raw, y_raw, phi, total_util, c,
             D = D, sigma = sigma,
-            stats_z = stats_z, loo_z = loo_z,
             grad_norm_z = grad_norm_z,
             grad_err_z = grad_err_z,
             knn_ratio_z = knn_ratio_z,
+            point_loss_z = point_loss_z,
             d=d
         )
         data_list.append(data)
@@ -387,18 +365,32 @@ class GINShap(torch.nn.Module):
             self.branches.append(convs)
 
         self.skip_lin = Linear(in_channels, hidden_channels * len(C_List)).to(device)
-        d_concat = hidden_channels * len(C_List)
+        d_concat = hidden_channels * len(C_List) # 64 * 6 = 384
 
-        encoder_layer = TransformerEncoderLayer(d_model=d_concat, nhead=heads, dropout=0.0, batch_first = True)
-        self.gt = TransformerEncoder(encoder_layer, num_layers = gt_layers).to(device)
+        self.Z_gin = Sequential(
+            Linear(d_concat, hidden_channels),
+            ReLU()
+        ).to(device)
 
-        self.pre_gt = Linear(in_channels, d_concat).to(device)
+        ### Transformer block
+        assert in_channels % heads == 0, "gt_d_model should be a multiple of heads"
+        self.gt_branches = torch.nn.ModuleList()
+        self.Z_gt_branches = torch.nn.ModuleList()
 
-        self.Z_gin = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
-        self.Z_gt = Sequential(Linear(d_concat, hidden_channels), ReLU()).to(device)
+        for _ in C_List:
+            encoder_layer = TransformerEncoderLayer(d_model = in_channels, nhead = heads,
+                                                    dim_feedforward = 1024,
+                                                    dropout = 0.0, batch_first = True)
+            gt_branch = TransformerEncoder(encoder_layer, num_layers = gt_layers)
+            self.gt_branches.append(gt_branch)
 
+            self.Z_gt_branches.append(Sequential(Linear(in_channels, hidden_channels), ReLU()))
+
+        self.fuse_gt = Linear(hidden_channels * len(C_List), hidden_channels).to(device)
+
+        extra_dim = EXTRA_DIM
         self.out = Sequential(
-            Linear( (hidden_channels * 2) + 3 + 2, hidden_channels * 2),
+            Linear((hidden_channels * 2) + extra_dim + 3 + 2, hidden_channels * 2),
             ReLU(),
             Linear(hidden_channels * 2, 100),
             ReLU(),
@@ -406,9 +398,11 @@ class GINShap(torch.nn.Module):
         ).to(device)
 
     def forward(self, data_list):
-        data0 = data_list[0]
-        x0 = data0.x
-        N = x0.size(0)
+        c1_idx = C_List.index(1)
+        data1 = data_list[c1_idx]
+        N = data1.x.size(0)
+
+        ### GIN Branches
         output_GIN = []
         for idx, (convs, gdata) in enumerate(zip(self.branches, data_list)):
             node_input = gdata.x
@@ -429,16 +423,23 @@ class GINShap(torch.nn.Module):
 
             output_GIN.append(node_input)
 
-        gin_cat = torch.cat(output_GIN, dim = 1)
-        gin_cat = gin_cat + self.skip_lin(x0)
-        h_gin = self.Z_gin(gin_cat)
+        gin_cat = torch.cat(output_GIN, dim=1)  # (N, 384) when hidden_channels = 64
+        gin_cat = gin_cat + self.skip_lin(data1.x)  # (N, 384) when hidden_channels = 64
+        h_gin = self.Z_gin(gin_cat)  # (N, 64) when hidden_channels = 64
 
-        gt_in = self.pre_gt(x0).unsqueeze(0)
-        gt_out = self.gt(gt_in).squeeze(0)
-        h_gt = self.Z_gt(gt_out)
+        ### 6 Transformer branches (shared weights, each corresponding to c in C_List)
+        h_gt_list = []
+        for gt_branch, z_branch, gdata in zip(self.gt_branches, self.Z_gt_branches, data_list):
+            x = gdata.x.unsqueeze(0) # (1, N, in_channels)
+            gt_out = gt_branch(x).squeeze(0) # (N, in_channels)
+            h_gt_i = z_branch(gt_out)  # (N, hidden_channels)
+            h_gt_list.append(h_gt_i)
 
-        h_fused = torch.cat([h_gin, h_gt], dim=1)
-        h_plus = torch.cat([h_fused, data0.k_feat, data0.u_feat], dim = 1)
+        h_gt_cat = torch.cat(h_gt_list, dim=1)  # (N, 64*6=384)
+        h_gt = self.fuse_gt(h_gt_cat)  # (N, 64)
+
+        h_fused = torch.cat([h_gin, h_gt], dim=1)  # (N, 128)
+        h_plus = torch.cat([h_fused, data1.extra, data1.k_feat, data1.u_feat], dim=1)  # (N, 142)
         return self.out(h_plus)
 
 '''
@@ -606,7 +607,7 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
             ## Training with KDE Weighted MSE(sigma = mean of pairwise distance):
             y1 = phi_true_scaled.view(-1, 1)
             if y1.size(0) >= 2:
-                sigma_kde = float(torch.pdist(y1, p = 2).median().item())
+                sigma_kde = float(torch.pdist(y1, p = 2).mean().item())
             else:
                 sigma_kde = 1e-12
             sigma_kde = max(sigma_kde, 1e-12)
@@ -1022,13 +1023,13 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260128/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260322/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
         BASE_TRAIN, BASE_TEST, OUT_DIR, HOLDOUTS,
         in_channels=FEAT_DIM, hidden_channels=64, heads=2,
-        epochs=700, lr=1e-5, weight_decay=1e-7,
-        scheduler_type="None", step_size=50, step_gamma = 0.5
+        epochs=1000, lr=1e-5, weight_decay=5e-7,
+        scheduler_type="None"
+        # , step_size=50, step_gamma = 0.5
     )
-
