@@ -4,7 +4,7 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import re
 import dgl
 import torch
@@ -89,7 +89,11 @@ def flip_pe_sign(x, method='sum'):
 'SVD'
 svd_d = 100
 FEAT_DIM = svd_d
-EXTRA_DIM = 10  # Gradient Norm + Grad Error + 7 KNN Ratios + final loss
+EXTRA_DIM = 50
+# 1. Gradient Norm + Grad Error (2)
+# 2. KNN Ratios (7)
+# 3. Loss per 10 iterations (21)
+# 4. differences on loss per 10 iterations (20)
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -110,7 +114,8 @@ C_List = [0.25, 0.5 , 1, 2, 4]
 def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
                 total_util: float, c: float, *, D: np.ndarray, sigma: float,
                 grad_norm_z: np.ndarray, grad_err_z: np.ndarray,
-                knn_ratio_z: np.ndarray, point_loss_z: np.ndarray,
+                knn_ratio_z: np.ndarray,
+                loss_path_z: np.ndarray, loss_diff_z: np.ndarray,
                 d: int = svd_d, weight_extra: float = 3.0) -> Data:
     ## Gaussian Kernel Adjacency
     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy = False)
@@ -122,10 +127,12 @@ def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
     grad_norm_z = np.asarray(grad_norm_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
     grad_err_z = np.asarray(grad_err_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
     knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 7)
-    point_loss_z = np.asarray(point_loss_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
+    loss_path_z = np.asarray(loss_path_z, dtype = np.float32)   # (N, 21)
+    loss_diff_z = np.asarray(loss_diff_z, dtype = np.float32)   # (N, 20)
 
     ## Weighted Injected Features
-    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z, point_loss_z], axis=1)  # (N, 9)
+    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z,
+                                  loss_path_z, loss_diff_z], axis=1)  # (N, 18)
     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
 
     ## Fully connected graph
@@ -236,10 +243,28 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     grad_norm_z = _standardize(grad_norm)
     grad_err_z  = _standardize(grad_err)
 
-    ## Compute training loss and loss statistics
-    p_true = np.clip(P[np.arange(n), col_idx], 1e-12, 1)
-    point_loss = -np.log(p_true)
-    point_loss_z = _standardize(point_loss)
+    ## Compute training loss at 1st iter, last iter, and difference
+    iter_list = [1] + list(range(10, 201, 10))
+    loss_path = []
+    lr_1 = LogisticRegression(max_iter = 1, random_state = 23)
+    lr_1.fit(X_raw, y_raw)
+    P_1 = lr_1.predict_proba(X_raw)
+    p_true_1 = np.clip(P_1[np.arange(n), col_idx], 1e-12, 1)
+    point_loss_1 = -np.log(p_true_1)
+    loss_path.append(point_loss_1)
+
+    for it in range(10, 201, 10):
+        lr_it = LogisticRegression(max_iter = it, random_state = 23)
+        lr_it.fit(X_raw, y_raw)
+        P_it = lr_it.predict_proba(X_raw)
+        p_true_it = np.clip(P_it[np.arange(n), col_idx], 1e-12, 1)
+        point_loss_it = -np.log(p_true_it)
+        loss_path.append(point_loss_it)
+
+    loss_path = np.stack(loss_path, axis = 1)
+    loss_diff = loss_path[:, :-1] - loss_path[:, 1:]
+    loss_path_z = np.column_stack([_standardize(loss_path[:, j]) for j in range(loss_path.shape[1])]).astype(np.float32, copy = False)
+    loss_diff_z = np.column_stack([_standardize(loss_diff[:, j]) for j in range(loss_diff.shape[1])]).astype(np.float32, copy = False)
 
     # ## Compute LOO values
     # n = X_raw.shape[0]
@@ -264,7 +289,8 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
             grad_norm_z = grad_norm_z,
             grad_err_z = grad_err_z,
             knn_ratio_z = knn_ratio_z,
-            point_loss_z = point_loss_z,
+            loss_path_z = loss_path_z,
+            loss_diff_z = loss_diff_z,
             d=d
         )
         data_list.append(data)
@@ -439,7 +465,7 @@ class GINShap(torch.nn.Module):
         h_gt = self.fuse_gt(h_gt_cat)  # (N, 64)
 
         h_fused = torch.cat([h_gin, h_gt], dim=1)  # (N, 128)
-        h_plus = torch.cat([h_fused, data1.extra, data1.k_feat, data1.u_feat], dim=1)  # (N, 142)
+        h_plus = torch.cat([h_fused, data1.extra, data1.k_feat, data1.u_feat], dim=1)  # (N, 183)
         return self.out(h_plus)
 
 '''
@@ -1023,7 +1049,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260322/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260323/Trial04'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
