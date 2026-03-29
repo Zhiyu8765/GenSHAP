@@ -89,11 +89,12 @@ def flip_pe_sign(x, method='sum'):
 'SVD'
 svd_d = 100
 FEAT_DIM = svd_d
-EXTRA_DIM = 50
+EXTRA_DIM = 50 + 6
 # 1. Gradient Norm + Grad Error (2)
 # 2. KNN Ratios (7)
 # 3. Loss per 10 iterations (21)
 # 4. differences on loss per 10 iterations (20)
+# 5. statistics of marginal contributions (6)
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -111,74 +112,253 @@ def SVD_Transform(A, d = svd_d):
 '''
 C_List = [0.25, 0.5 , 1, 2, 4]
 
+# def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
+#                 total_util: float, c: float, *, D: np.ndarray, sigma: float,
+#                 grad_norm_z: np.ndarray, grad_err_z: np.ndarray,
+#                 knn_ratio_z: np.ndarray,
+#                 loss_path_z: np.ndarray, loss_diff_z: np.ndarray,
+#                 mc_margin_z: np.ndarray,
+#                 d: int = svd_d, weight_extra: float = 3.0) -> Data:
+#     ## Gaussian Kernel Adjacency
+#     A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy = False)
+#     X_svd = SVD_Transform(A, d = d).astype(np.float32, copy = False)
+#     y = np.asarray(y_raw).ravel()
+#     A_y = (y[:, None] == y[None, :]).astype(np.float32, copy=False)
+#
+#     ## Injection of Gradient Norm + Grad Error + KNN ratio + final loss
+#     grad_norm_z = np.asarray(grad_norm_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
+#     grad_err_z = np.asarray(grad_err_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
+#     knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 7)
+#     loss_path_z = np.asarray(loss_path_z, dtype = np.float32)   # (N, 21)
+#     loss_diff_z = np.asarray(loss_diff_z, dtype = np.float32)   # (N, 20)
+#     mc_margin_z = np.asarray(mc_margin_z, dtype = np.float32)   # (N, 6)
+#     ## Weighted Injected Features
+#     extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z,
+#                                   loss_path_z, loss_diff_z, mc_margin_z], axis=1)  # (N, 56)
+#     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
+#
+#     ## Fully connected graph
+#     N = X_raw.shape[0]
+#     src, dst = np.triu_indices(N, k=1)
+#     eidx = np.vstack([src, dst])
+#     edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis=1), dtype=torch.long, device = device)
+#
+#     w_feat = A[src, dst]
+#     w_label = A_y[src, dst]
+#     edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype=torch.float32, device = device).unsqueeze(1)
+#     edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype=torch.float32, device = device).unsqueeze(1)
+#
+#     data = Data(
+#         x=torch.tensor(X_svd, dtype=torch.float32, device = device),
+#         edge_index=edge_index,
+#         edge_attr_feat=edge_attr_feat,
+#         edge_attr_label=edge_attr_label
+#     )
+#
+#     ## Attributes
+#     data.phi = torch.tensor(phi, dtype=torch.float32, device = device)
+#     data.total_util = torch.tensor(total_util, dtype=torch.float32, device = device)
+#     data.y = torch.tensor(y_raw, dtype=torch.long, device = device)
+#     data.extra = torch.tensor(extra_feats, dtype = torch.float32, device = device)
+#
+#     ## Record number of classes of each dataset
+#     K = int(np.unique(y).size)
+#     k_vec = np.array([K, 1/max(1e-12, K), np.log(K)], dtype=np.float32)    # (N, 3)
+#     data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float32, device = device)
+#
+#     ## Inject total utility
+#     u = float(total_util)
+#     u_vec = np.array([u, 1.0/max(u, 1e-12)], dtype = np.float32)  # (2,)
+#     data.u_feat = torch.tensor(np.tile(u_vec, (N, 1)), dtype=torch.float32, device = device)
+#
+#     ## Keep grad_norm_z, grad_err_z for diagnostics
+#     data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float32, device = device)
+#     data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float32, device = device)
+#     data.knn_ratio_z = torch.tensor(knn_ratio_z, dtype=torch.float32, device = device)
+#
+#     return data
+
+## To fix memory limits, move one dataset to GPU
 def build_graph(X_raw: np.ndarray, y_raw: np.ndarray, phi: np.ndarray,
                 total_util: float, c: float, *, D: np.ndarray, sigma: float,
                 grad_norm_z: np.ndarray, grad_err_z: np.ndarray,
                 knn_ratio_z: np.ndarray,
                 loss_path_z: np.ndarray, loss_diff_z: np.ndarray,
+                mc_margin_z: np.ndarray,
                 d: int = svd_d, weight_extra: float = 3.0) -> Data:
     ## Gaussian Kernel Adjacency
-    A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy = False)
-    X_svd = SVD_Transform(A, d = d).astype(np.float32, copy = False)
+    A = np.exp(-(D ** 2) / (2 * (c * sigma) ** 2)).astype(np.float32, copy=False)
+    X_svd = SVD_Transform(A, d=d).astype(np.float32, copy=False)
     y = np.asarray(y_raw).ravel()
     A_y = (y[:, None] == y[None, :]).astype(np.float32, copy=False)
 
     ## Injection of Gradient Norm + Grad Error + KNN ratio + final loss
-    grad_norm_z = np.asarray(grad_norm_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
-    grad_err_z = np.asarray(grad_err_z, dtype = np.float32).reshape(-1, 1)  # (N, 1)
-    knn_ratio_z = np.asarray(knn_ratio_z, dtype = np.float32)   # (N, 7)
-    loss_path_z = np.asarray(loss_path_z, dtype = np.float32)   # (N, 21)
-    loss_diff_z = np.asarray(loss_diff_z, dtype = np.float32)   # (N, 20)
+    grad_norm_z = np.asarray(grad_norm_z, dtype=np.float32).reshape(-1, 1)
+    grad_err_z = np.asarray(grad_err_z, dtype=np.float32).reshape(-1, 1)
+    knn_ratio_z = np.asarray(knn_ratio_z, dtype=np.float32)
+    loss_path_z = np.asarray(loss_path_z, dtype=np.float32)
+    loss_diff_z = np.asarray(loss_diff_z, dtype=np.float32)
+    mc_margin_z = np.asarray(mc_margin_z, dtype=np.float32)
 
     ## Weighted Injected Features
-    extra_feats = np.concatenate([grad_norm_z, grad_err_z, knn_ratio_z,
-                                  loss_path_z, loss_diff_z], axis=1)  # (N, 18)
+    extra_feats = np.concatenate(
+        [grad_norm_z, grad_err_z, knn_ratio_z, loss_path_z, loss_diff_z, mc_margin_z],
+        axis=1
+    ).astype(np.float32, copy=False)
     extra_feats = (weight_extra * extra_feats).astype(np.float32, copy=False)
 
     ## Fully connected graph
     N = X_raw.shape[0]
     src, dst = np.triu_indices(N, k=1)
     eidx = np.vstack([src, dst])
-    edge_index = torch.tensor(np.concatenate([eidx, eidx[::-1]], axis=1), dtype=torch.long, device = device)
+    edge_index = torch.tensor(
+        np.concatenate([eidx, eidx[::-1]], axis=1),
+        dtype=torch.long
+    )  # CPU only
 
     w_feat = A[src, dst]
     w_label = A_y[src, dst]
-    edge_attr_feat = torch.tensor(np.concatenate([w_feat, w_feat]), dtype=torch.float32, device = device).unsqueeze(1)
-    edge_attr_label = torch.tensor(np.concatenate([w_label, w_label]), dtype=torch.float32, device = device).unsqueeze(1)
+    edge_attr_feat = torch.tensor(
+        np.concatenate([w_feat, w_feat]),
+        dtype=torch.float32
+    ).unsqueeze(1)  # CPU only
+    edge_attr_label = torch.tensor(
+        np.concatenate([w_label, w_label]),
+        dtype=torch.float32
+    ).unsqueeze(1)  # CPU only
 
     data = Data(
-        x=torch.tensor(X_svd, dtype=torch.float32, device = device),
+        x=torch.tensor(X_svd, dtype=torch.float32),   # CPU only
         edge_index=edge_index,
         edge_attr_feat=edge_attr_feat,
         edge_attr_label=edge_attr_label
     )
 
     ## Attributes
-    data.phi = torch.tensor(phi, dtype=torch.float32, device = device)
-    data.total_util = torch.tensor(total_util, dtype=torch.float32, device = device)
-    data.y = torch.tensor(y_raw, dtype=torch.long, device = device)
-    data.extra = torch.tensor(extra_feats, dtype = torch.float32, device = device)
+    data.phi = torch.tensor(phi, dtype=torch.float32)
+    data.total_util = torch.tensor(total_util, dtype=torch.float32)
+    data.y = torch.tensor(y_raw, dtype=torch.long)
+    data.extra = torch.tensor(extra_feats, dtype=torch.float32)
 
     ## Record number of classes of each dataset
     K = int(np.unique(y).size)
-    k_vec = np.array([K, 1/max(1e-12, K), np.log(K)], dtype=np.float32)    # (N, 3)
-    data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float32, device = device)
+    k_vec = np.array([K, 1 / max(1e-12, K), np.log(K)], dtype=np.float32)
+    data.k_feat = torch.tensor(np.tile(k_vec, (N, 1)), dtype=torch.float32)
 
     ## Inject total utility
     u = float(total_util)
-    u_vec = np.array([u, 1.0/max(u, 1e-12)], dtype = np.float32)  # (2,)
-    data.u_feat = torch.tensor(np.tile(u_vec, (N, 1)), dtype=torch.float32, device = device)
+    u_vec = np.array([u, 1.0 / max(u, 1e-12)], dtype=np.float32)
+    data.u_feat = torch.tensor(np.tile(u_vec, (N, 1)), dtype=torch.float32)
 
     ## Keep grad_norm_z, grad_err_z for diagnostics
-    data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float32, device = device)
-    data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float32, device = device)
-    data.knn_ratio_z = torch.tensor(knn_ratio_z, dtype=torch.float32, device = device)
+    data.grad_norm_z = torch.tensor(grad_norm_z, dtype=torch.float32)
+    data.grad_err_z  = torch.tensor(grad_err_z, dtype=torch.float32)
+    data.knn_ratio_z = torch.tensor(knn_ratio_z, dtype=torch.float32)
 
     return data
 
 '''
 3. Data Preprocessing
 '''
+def _safe_lr_utility(X_tr, y_tr, X_te, y_te, max_iter=200, random_state=23):
+    """
+    Utility = test accuracy of logistic regression.
+    Returns np.nan if the subset is not trainable (e.g. only one class).
+    """
+    y_tr = np.asarray(y_tr).ravel()
+    if len(np.unique(y_tr)) < 2:
+        return np.nan
+
+    try:
+        clf = LogisticRegression(max_iter=max_iter, random_state=random_state)
+        clf.fit(X_tr, y_tr)
+        return float(clf.score(X_te, y_te))
+    except Exception:
+        return np.nan
+
+
+def compute_mc_marginal_features(
+    X_raw: np.ndarray,
+    y_raw: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    n_samples: int = 5,
+    random_state: int = 23,
+    min_subset_size: int = 5,
+    max_subset_size: int = None,
+    max_tries_per_sample: int = 30,
+) -> np.ndarray:
+    """
+    For each data point i, sample subsets S not containing i and compute:
+        U(S ∪ {i}) - U(S)
+    Then summarize the sampled marginal contributions into 6 features:
+        [mean, std, pos_rate, neg_rate, min, max]
+
+    Output shape: (N, 6)
+    """
+    rng = np.random.default_rng(random_state)
+
+    X_raw = np.asarray(X_raw)
+    y_raw = np.asarray(y_raw).ravel()
+    X_test = np.asarray(X_test)
+    y_test = np.asarray(y_test).ravel()
+
+    N = X_raw.shape[0]
+    K = len(np.unique(y_raw))
+    if max_subset_size is None:
+        max_subset_size = max(min(N - 1, max(min_subset_size + 1, N // 2)), min_subset_size)
+
+    feats = np.zeros((N, 6), dtype=np.float32)
+
+    all_idx = np.arange(N)
+
+    for i in range(N):
+        others = all_idx[all_idx != i]
+        diffs = []
+
+        for _ in range(n_samples):
+            accepted = False
+
+            for _try in range(max_tries_per_sample):
+                k = int(rng.integers(min_subset_size, max_subset_size + 1))
+                if k > len(others):
+                    continue
+
+                S = rng.choice(others, size=k, replace=False)
+                yS = y_raw[S]
+
+                # need at least 2 classes in S so LR is trainable
+                if len(np.unique(yS)) < min(2, K):
+                    continue
+
+                u_S = _safe_lr_utility(X_raw[S], y_raw[S], X_test, y_test)
+                if np.isnan(u_S):
+                    continue
+
+                S_plus_i = np.concatenate([S, np.array([i])])
+                u_Si = _safe_lr_utility(X_raw[S_plus_i], y_raw[S_plus_i], X_test, y_test)
+                if np.isnan(u_Si):
+                    continue
+
+                diffs.append(u_Si - u_S)
+                accepted = True
+                break
+
+            if not accepted:
+                # fallback if no valid subset found
+                diffs.append(0.0)
+
+        diffs = np.asarray(diffs, dtype=np.float32)
+
+        feats[i, 0] = diffs.mean()
+        feats[i, 1] = diffs.std()
+        feats[i, 2] = (diffs > 0).mean()
+        feats[i, 3] = (diffs < 0).mean()
+        feats[i, 4] = diffs.min()
+        feats[i, 5] = diffs.max()
+
+    return feats
+
 def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     def _standardize(arr: np.ndarray) -> np.ndarray:
         arr = np.asarray(arr, dtype = np.float64)
@@ -266,6 +446,14 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     loss_path_z = np.column_stack([_standardize(loss_path[:, j]) for j in range(loss_path.shape[1])]).astype(np.float32, copy = False)
     loss_diff_z = np.column_stack([_standardize(loss_diff[:, j]) for j in range(loss_diff.shape[1])]).astype(np.float32, copy = False)
 
+    ## Compute statistics of marginal contribution
+    mc_margin_feat = compute_mc_marginal_features(
+        X_raw, y_raw, X_test, y_test,
+        n_samples = 5, random_state = 23,
+        min_subset_size = max(5, len(np.unique(y_raw)) + 1),
+        max_subset_size = min(X_raw.shape[0] - 1, 50)
+    )
+    mc_margin_z = np.column_stack([_standardize(mc_margin_feat[:, j]) for j in range(mc_margin_feat.shape[1])]).astype(np.float32, copy = False)
     # ## Compute LOO values
     # n = X_raw.shape[0]
     # loo_raw = np.zeros(n, dtype=np.float64)
@@ -291,6 +479,7 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
             knn_ratio_z = knn_ratio_z,
             loss_path_z = loss_path_z,
             loss_diff_z = loss_diff_z,
+            mc_margin_z = mc_margin_z,
             d=d
         )
         data_list.append(data)
@@ -606,14 +795,27 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
         wloss_list = []
         mse_list = []
 
-        for data_list in dataset_graphs:
+        # for data_list in dataset_graphs:
+        #     total_util = float(data_list[0].total_util.item())
+        #     phi_true = data_list[0].phi.view(-1)
+        #     N = phi_true.numel()
+        #
+        #     scale = N/max(total_util, 1e-15)
+        #     phi_true_scaled = phi_true * scale
+        #     phi_hat_scaled = model(data_list).view(-1)
+
+        ## move one dataset to GPU
+        for data_list_cpu in dataset_graphs:
+            data_list = to_device_datalist(data_list_cpu, device)
+
             total_util = float(data_list[0].total_util.item())
             phi_true = data_list[0].phi.view(-1)
             N = phi_true.numel()
 
-            scale = N/max(total_util, 1e-15)
+            scale = N / max(total_util, 1e-15)
             phi_true_scaled = phi_true * scale
             phi_hat_scaled = model(data_list).view(-1)
+
 
             ## Record MSE
             phi_hat = phi_hat_scaled * (total_util / N)
@@ -646,6 +848,9 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
             wloss_list.append(wloss.detach())
             mse_list.append(mse_phi.detach())
 
+            del data_list
+
+
         if device.type == "cuda":
             torch.cuda.synchronize()
         train_sec = time.perf_counter() - t0_train
@@ -664,7 +869,22 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
             model.eval()
             mses = []
             with torch.no_grad():
-                for base, dl in holdout_cache.items():
+                # for base, dl in holdout_cache.items():
+                #     if device.type == "cuda":
+                #         torch.cuda.synchronize()
+                #     t0_pred = time.perf_counter()
+                #
+                #     pred_scaled = model(dl).view(-1)
+                #     phi_t = dl[0].phi.view(-1)
+                #     total_util_t = dl[0].total_util
+                #     N_t = phi_t.numel()
+                #
+                #     pred_phi = pred_scaled * (total_util_t / N_t)
+                #     m = float(F.mse_loss(pred_phi, phi_t, reduction="mean").item())
+
+                for base, dl_cpu in holdout_cache.items():
+                    dl = to_device_datalist(dl_cpu, device)
+
                     if device.type == "cuda":
                         torch.cuda.synchronize()
                     t0_pred = time.perf_counter()
@@ -686,6 +906,8 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
 
                     row[base] = m
                     mses.append(m)
+
+                    del dl
 
             row["avg_mse"] = float(np.mean(mses)) if mses else np.nan
             print(f"Epoch {ep:5d} | wLoss: {train_wloss:.8e} | Train MSE: {train_mse:.8e} | Holdout(avg): {row['avg_mse']:.8e}")
@@ -773,12 +995,23 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
 '''
 def predict(model, data_list):
     model.eval()
+    # with torch.no_grad():
+    #     yhat_scaled = model(data_list).view(-1)
+    #     total_util = data_list[0].total_util.to(yhat_scaled.device)
+    #     N = data_list[0].x.size(0)
+    #     descaled = yhat_scaled * (total_util / N)
+    #     return descaled.detach().cpu().numpy()
     with torch.no_grad():
-        yhat_scaled = model(data_list).view(-1)
-        total_util = data_list[0].total_util.to(yhat_scaled.device)
-        N = data_list[0].x.size(0)
+        data_list_dev = to_device_datalist(data_list, device)
+        yhat_scaled = model(data_list_dev).view(-1)
+        total_util = data_list_dev[0].total_util.to(yhat_scaled.device)
+        N = data_list_dev[0].x.size(0)
         descaled = yhat_scaled * (total_util / N)
-        return descaled.detach().cpu().numpy()
+        out = descaled.detach().cpu().numpy()
+
+        del data_list_dev
+
+        return out
 
 '''
 7. Supplementary Functions
@@ -1049,7 +1282,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260323/Trial04'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260328/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
