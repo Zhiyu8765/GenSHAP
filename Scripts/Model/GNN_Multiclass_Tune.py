@@ -282,7 +282,7 @@ def compute_mc_marginal_features(
     y_raw: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
-    n_samples: int = 5,
+    n_samples: int = 20,
     random_state: int = 23,
     min_subset_size: int = 5,
     max_subset_size: int = None,
@@ -449,7 +449,7 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     ## Compute statistics of marginal contribution
     mc_margin_feat = compute_mc_marginal_features(
         X_raw, y_raw, X_test, y_test,
-        n_samples = 5, random_state = 23,
+        n_samples = 20, random_state = 23,
         min_subset_size = max(5, len(np.unique(y_raw)) + 1),
         max_subset_size = min(X_raw.shape[0] - 1, 50)
     )
@@ -1282,7 +1282,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260328/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260329/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(

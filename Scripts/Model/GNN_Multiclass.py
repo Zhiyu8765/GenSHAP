@@ -1049,7 +1049,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260326/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260329/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
