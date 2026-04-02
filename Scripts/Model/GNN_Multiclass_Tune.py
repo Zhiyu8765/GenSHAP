@@ -89,12 +89,12 @@ def flip_pe_sign(x, method='sum'):
 'SVD'
 svd_d = 100
 FEAT_DIM = svd_d
-EXTRA_DIM = 50 + 6
+EXTRA_DIM = 50 + 100
 # 1. Gradient Norm + Grad Error (2)
 # 2. KNN Ratios (7)
 # 3. Loss per 10 iterations (21)
 # 4. differences on loss per 10 iterations (20)
-# 5. statistics of marginal contributions (6)
+# 5. samples of marginal contributions (100)
 
 def SVD_Transform(A, d = svd_d):
     U, S, Vt = np.linalg.svd(A, full_matrices=False)
@@ -308,7 +308,7 @@ def compute_mc_marginal_features(
     if max_subset_size is None:
         max_subset_size = max(min(N - 1, max(min_subset_size + 1, N // 2)), min_subset_size)
 
-    feats = np.zeros((N, 6), dtype=np.float32)
+    feats = np.zeros((N, n_samples), dtype=np.float32)
 
     all_idx = np.arange(N)
 
@@ -348,14 +348,7 @@ def compute_mc_marginal_features(
                 # fallback if no valid subset found
                 diffs.append(0.0)
 
-        diffs = np.asarray(diffs, dtype=np.float32)
-
-        feats[i, 0] = diffs.mean()
-        feats[i, 1] = diffs.std()
-        feats[i, 2] = (diffs > 0).mean()
-        feats[i, 3] = (diffs < 0).mean()
-        feats[i, 4] = diffs.min()
-        feats[i, 5] = diffs.max()
+        feats[i, :] = np.asarray(diffs, dtype = np.float32)
 
     return feats
 
@@ -449,7 +442,7 @@ def load_and_preprocess(train_csv: str, test_csv: str, d: int = svd_d):
     ## Compute statistics of marginal contribution
     mc_margin_feat = compute_mc_marginal_features(
         X_raw, y_raw, X_test, y_test,
-        n_samples = 20, random_state = 23,
+        n_samples = 100, random_state = 23,
         min_subset_size = max(5, len(np.unique(y_raw)) + 1),
         max_subset_size = min(X_raw.shape[0] - 1, 50)
     )
@@ -1282,7 +1275,7 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 if __name__ == "__main__":
     BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Train'
     BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Multi_V1/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260329/Trial01'
+    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260331/Trial01'
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(
