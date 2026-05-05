@@ -1,5 +1,5 @@
 # GenSHAP
-
+## Towards Generalizable Data Valuation: Learning An End-to-end Deep Model to Compute Shapley Values
 GenSHAP is a research codebase for efficient data valuation. It learns to approximate personalized Data Shapley values by representing each dataset as a graph and training graph neural models to predict the contribution of each training example.
 
 The repository includes implementations for logistic-regression and SVM base-model settings, scripts for computing reference Data Shapley values, baseline comparisons, experiment plots, and generated evaluation outputs.
@@ -156,7 +156,5 @@ These scripts include utilities for permutation-based Data Shapley, TMC Data Sha
 - The model scripts set CUDA device visibility near the top of the file. Adjust `CUDA_VISIBLE_DEVICES` and `torch.cuda.set_device(...)` for your hardware.
 - `Datasets_Backup/`, `Outputs_II/`, `Paper/`, checkpoint files, and compressed archives are excluded from version control or intended to remain local unless explicitly needed.
 
-## Author
 
-Zhiyu Chen
 
