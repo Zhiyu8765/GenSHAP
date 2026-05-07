@@ -136,7 +136,7 @@ def make_multiclass_split(df, label_col, classes = None, n_per_class = 1000, tes
 
 ''' 3. Calculation of Data Shapley Values '''
 '1) Iris'
-save_dir = 'E:\Zhiyu\Datasets\Checked'
+save_dir = 'E:\Datasets\Checked'
 model = 'logistic'
 problem = 'classification'
 metric = 'accuracy'
