@@ -6,6 +6,7 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import re
+from pathlib import Path
 import dgl
 import torch
 import time
@@ -24,6 +25,10 @@ from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.linear_model import LogisticRegression
 from Scripts.Additional_Scripts.PerformancePlots_4lines import PerformancePlot_Removal
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATASETS_DIR = (PROJECT_ROOT / "Datasets").resolve()
+OUTPUTS_DIR = (PROJECT_ROOT / "Outputs_II").resolve()
 
 'Check Availability of GPU'
 torch.cuda.set_device(0)
@@ -1333,9 +1338,9 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 ########################################  Experiments ###############################################
 
 if __name__ == "__main__":
-    BASE_TRAIN = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_LR/Random_PCA/Train'
-    BASE_TEST  = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_LR/Random_PCA/Test'
-    OUT_DIR    = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260415/Trial05'
+    BASE_TRAIN = str(DATASETS_DIR / "Base_LR" / "Random_PCA" / "Train")
+    BASE_TEST  = str(DATASETS_DIR / "Base_LR" / "Random_PCA" / "Test")
+    OUT_DIR    = str(OUTPUTS_DIR / "260415" / "Trial05")
     HOLDOUTS   = ['Iris_1', 'Vehicle_01_1', 'characters_048_1', 'STL10_3568x_3', 'volkert_15_2', 'volkert_1245_1']
 
     _ = train_then_diagnose(

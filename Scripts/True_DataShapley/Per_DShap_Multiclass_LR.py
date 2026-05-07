@@ -23,10 +23,19 @@ from sklearn.exceptions import ConvergenceWarning
 import sys
 print(sys.executable)
 import os
-os.chdir('E:/   DataShapley')
-# os.chdir('/mnt/data/    /pycharm_project_236/tmp/pycharm_project_236/DataShapley')
-sys.path.append(os.getcwd())
-#sys.path.append('/Users/ca-ml-01/Nutstore Files/c-a/Research/Data Valuation/DataShapley_Graph/DataShapley')
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATASHAPLEY_DIR = (PROJECT_ROOT / "DataShapley").resolve()
+DATASETS_DIR = (PROJECT_ROOT / "Datasets").resolve()
+DEFAULT_TMC_DIR = str((DATASHAPLEY_DIR / "temp").resolve())
+STL10_TMC_DIR = str((DATASHAPLEY_DIR / "temp_stl10").resolve())
+
+def dataset_dir(*parts):
+    return str((DATASETS_DIR.joinpath(*parts)).resolve())
+
+os.chdir(DATASHAPLEY_DIR)
+sys.path.append(str(DATASHAPLEY_DIR))
 
 ### Package and Environments for TMC_Shapley
 #%load_ext autoreload
@@ -46,7 +55,7 @@ from sklearn.datasets import load_iris, load_breast_cancer
 from sklearn.model_selection import train_test_split
 
 #%matplotlib inline
-MEM_DIR = '../'
+MEM_DIR = str(PROJECT_ROOT)
 
 ''' 1. Function to Calculate Permutated-Based Data Shapley Values'''
 def Per_DShap(X, y, X_test, y_test, n_permutations = 5000,
@@ -136,11 +145,11 @@ def make_multiclass_split(df, label_col, classes = None, n_per_class = 1000, tes
 
 ''' 3. Calculation of Data Shapley Values '''
 '1) Iris'
-save_dir = 'E:\  \Datasets\Checked'
+save_dir = dataset_dir("Checked")
 model = 'logistic'
 problem = 'classification'
 metric = 'accuracy'
-directory = './temp'
+directory = DEFAULT_TMC_DIR
 
 iris = load_iris()
 X = pd.DataFrame(iris.data, columns = iris.feature_names)
@@ -178,9 +187,9 @@ Iris_TMC.to_csv(f'{save_dir}/Iris_TMC_1', index=False)
 ' 2) Breast Cancer '
 n_trials = 3
 m = 200
-save_dir = '/Users/ca-ml-01/Dropbox/c-a/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/BC'
+save_dir = dataset_dir("1000pts_I", "BC")
 
-directory = './temp'
+directory = DEFAULT_TMC_DIR
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(directory, exist_ok=True)
 
@@ -245,9 +254,7 @@ seed0        = 10231
 classes_pool = list(range(10))
 k_min, k_max = 2, 3
 
-save_dir = ("/Users/ca-ml-01/Dropbox/c-a/Research/"
-            "Data Valuation/DataShapley_Graph/"
-            "Datasets/1000pts_I/MNIST")
+save_dir = dataset_dir("1000pts_I", "MNIST")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -340,7 +347,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=250625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=250625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -352,14 +359,14 @@ for i in range(1, n_trials + 1):
 
 
 ' 4) Vehicle '
-save_dir = "/Users/ca-ml-01/Dropbox/c-a/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Vehicle"
+save_dir = dataset_dir("1000pts_I", "Vehicle")
 plot_dir = save_dir
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 model = 'logistic'
 problem = 'classification'
 metric = 'accuracy'
-directory = './temp'
+directory = DEFAULT_TMC_DIR
 RANDOM_STATE = 23
 test_size = 0.5
 
@@ -423,7 +430,7 @@ seed0        = 1112
 classes_pool = list(range(10))
 k_min, k_max = 2, 4
 c_pca = np.random.randint(5, 101)
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -526,7 +533,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=350625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=350625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -544,7 +551,7 @@ seed0        = 1112
 classes_pool = list(range(10))
 k_min, k_max = 2, 5
 
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -647,7 +654,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=450625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=450625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -665,7 +672,7 @@ seed0        = 1113
 classes_pool = list(range(100))
 k_min, k_max = 2, 5
 
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -770,7 +777,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=550625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=550625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -807,7 +814,7 @@ classes_pool = sorted(y_pool.unique().tolist())  # actual label set in ImageNet-
 k_min, k_max = 2, 5   # number of classes per random task
 m_min, m_max = 950, 1001  # target train size per trial (test size = same)
 
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -913,7 +920,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=750625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=750625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -952,7 +959,7 @@ seed0        = 260123
 k_min, k_max = 2, 5
 m_min, m_max = 950, 1001
 
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1065,7 +1072,7 @@ for i in range(1, n_trials + 1):
         model_family='logistic',
         metric='accuracy',
         overwrite=True,
-        directory='./temp',
+        directory=DEFAULT_TMC_DIR,
         seed=750625 + i,
         max_iter=100,
         err=0.005,
@@ -1111,7 +1118,7 @@ seed0        = 260123
 k_min, k_max = 2, 5       # number of classes per random task
 m_min, m_max = 950, 1001  # m train, m test per trial
 
-save_dir = "E:/   Datasets/Datasets_III"
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1227,7 +1234,7 @@ for i in range(1, n_trials + 1):
         model_family='logistic',
         metric='accuracy',
         overwrite=True,
-        directory='./temp_stl10',
+        directory=STL10_TMC_DIR,
         seed=750625 + i,
         max_iter=100,
         err=0.005,
@@ -1249,7 +1256,7 @@ Datasets in OpenML
 n_trials     = 3
 seed0        = 260126
 k_min, k_max = 2, 5   # credit-g is binary; keep K=2
-save_dir = ("E:/   Datasets/Datasets_III")
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1381,7 +1388,7 @@ for i in range(1, n_trials + 1):
         X_train.values, y_train.values, X_test.values, y_test.values,
         num_test=len(y_test), sources=None, sample_weight=None,
         model_family='logistic', metric='accuracy', overwrite=True,
-        directory='./temp', seed=250625 + i, max_iter=100, err=0.005, tol=1e-5
+        directory=DEFAULT_TMC_DIR, seed=250625 + i, max_iter=100, err=0.005, tol=1e-5
     )
     shapley_model.run(save_every=100, err=0.1, g_run=True, loo_run=True)
 
@@ -1403,7 +1410,7 @@ k_min, k_max = 2, 5
 # Keep these modest for runtime; increase if you want
 m_min, m_max = 900, 1001   # train size = m, test size = m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1594,7 +1601,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -1620,7 +1627,7 @@ k_min, k_max = 2, 5
 # Adjust m for runtime; bank-marketing is large so 1000/1000 is fine
 m_min, m_max = 950, 1000     # train size = m, test size = m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1809,7 +1816,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -1835,7 +1842,7 @@ k_min, k_max = 2, 5
 # Train size = m, test size = m
 m_min, m_max = 950, 1000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1982,7 +1989,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2008,7 +2015,7 @@ k_min, k_max = 2, 5
 # Train size = m, test size = m
 m_min, m_max = 800, 900
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2164,7 +2171,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2189,7 +2196,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2340,7 +2347,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2365,7 +2372,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2520,7 +2527,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2545,7 +2552,7 @@ seed0    = 260128
 k_min, k_max = 2, 3
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2763,7 +2770,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2788,7 +2795,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -2924,7 +2931,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -2949,7 +2956,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3100,7 +3107,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -3123,7 +3130,7 @@ seed0        = 260129
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3273,7 +3280,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -3298,7 +3305,7 @@ seed0        = 260130
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3454,7 +3461,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -3476,7 +3483,7 @@ seed0        = 260130
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3653,7 +3660,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -3676,7 +3683,7 @@ seed0        = 260130
 k_min, k_max = 2, 4         # jannis has multiple classes
 m_min, m_max = 900, 1000     # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -3816,7 +3823,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -3832,7 +3839,7 @@ for i in range(1, n_trials + 1):
 
 
 ' Shuttle'
-REPO_DIR = r"E:/   DataShapley_Graph/Datasets_III"
+REPO_DIR = dataset_dir("Datasets_III")
 if os.path.isdir(REPO_DIR):
     os.chdir(REPO_DIR)
     sys.path.append(os.getcwd())
@@ -3843,7 +3850,7 @@ seed0        = 260202
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls):
@@ -4003,7 +4010,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -4027,7 +4034,7 @@ seed0        = 260202
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls):
@@ -4181,7 +4188,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -4207,7 +4214,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -4371,7 +4378,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -4399,7 +4406,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -4607,7 +4614,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -4632,7 +4639,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 X_pool, y_raw = fetch_openml(
@@ -4822,7 +4829,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -4846,7 +4853,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # =========================================================
@@ -5070,7 +5077,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -5096,7 +5103,7 @@ N_PERM     = 5000
 # m random in [900, 1000]
 m_lo, m_hi = 900, 1000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # =========================================================
@@ -5303,7 +5310,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         err=0.005,
@@ -5332,7 +5339,7 @@ m_min, m_max = 950, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"   # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # ---- load autos by name ----
@@ -5492,7 +5499,7 @@ for trial in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + trial,
         max_iter=100,
         err=0.005,
@@ -5520,7 +5527,7 @@ N_PERM       = 5000
 # pick m based on typical size; adjust if you want
 m_min, m_max = 900, 1000
 
-save_dir = r"E:/   Datasets/Datasets_III"   # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 # -----------------------------
 # Load from OpenML
@@ -5704,7 +5711,7 @@ for trial in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + trial,
         max_iter=100,
         err=0.005,
@@ -5734,7 +5741,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"   # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -5936,7 +5943,7 @@ for trial in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + trial,
         max_iter=100,
         err=0.005,
@@ -5966,7 +5973,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -6174,7 +6181,7 @@ for trial in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + trial,
         max_iter=100,
         err=0.005,
@@ -6204,7 +6211,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/   Datasets/Datasets_III"  # EDIT
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -6425,7 +6432,7 @@ for trial in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + trial,
         max_iter=100,
         err=0.005,
@@ -6450,7 +6457,7 @@ seed0        = 260326
 k_min, k_max = 2, 5          # random K-way task from the 7 bean classes
 m_min, m_max = 900, 1000     # train size = m, test size = m
 
-save_dir = r"E:/   Datasets/Datasets_III"   # EDIT if needed
+save_dir = dataset_dir("Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -6608,7 +6615,7 @@ for i in range(1, n_trials + 1):
         model_family="logistic",
         metric="accuracy",
         overwrite=True,
-        directory="./temp",
+        directory=DEFAULT_TMC_DIR,
         seed=250625 + i,
         max_iter=100,
         tol=1e-5
@@ -6642,11 +6649,11 @@ m_min, m_max = 900, 1000
 max_subset_attempts = 500
 
 # save location
-save_dir = r"E:/   Datasets/Datasets_III"   # change if needed
+save_dir = dataset_dir("Datasets_III")
 os.makedirs(save_dir, exist_ok=True)
 
 # DShap temp directory
-temp_dir = "./temp"
+temp_dir = DEFAULT_TMC_DIR
 os.makedirs(temp_dir, exist_ok=True)
 
 

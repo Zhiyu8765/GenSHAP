@@ -7,6 +7,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import re
 import warnings
+from pathlib import Path
 import dgl
 import torch
 import time
@@ -25,6 +26,10 @@ from sklearn.metrics.pairwise import pairwise_distances
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.svm import SVC
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATASETS_DIR = (PROJECT_ROOT / "Datasets").resolve()
+OUTPUTS_DIR = (PROJECT_ROOT / "Outputs_II").resolve()
 
 'Check Availability of GPU'
 torch.cuda.set_device(0)
@@ -1211,9 +1216,9 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 ########################################  Experiments ###############################################
 
 if __name__ == "__main__":
-    BASE_TRAIN = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Train'
-    BASE_TEST  = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Test'
-    OUT_DIR    = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260504/Trial02'
+    BASE_TRAIN = str(DATASETS_DIR / "Base_SVM" / "Train")
+    BASE_TEST  = str(DATASETS_DIR / "Base_SVM" / "Test")
+    OUT_DIR    = str(OUTPUTS_DIR / "260504" / "Trial02")
     HOLDOUTS   = ['Iris_1', 'Vehicle_1', 'STL10_27xxx_2', 'STL10_1279x_1', 'volkert_25_1', 'volkert_0678_2', 'BC_2']
 
     _ = train_then_diagnose(
