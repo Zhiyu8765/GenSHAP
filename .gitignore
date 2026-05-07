@@ -18,3 +18,7 @@ Scripts/Experiment_Plots/
 
 *.zip
 *.tar.gz
+.idea/
+__pycache__/
+*.pyc
+*_metadata.json
