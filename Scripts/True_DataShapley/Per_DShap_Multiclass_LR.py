@@ -26,7 +26,7 @@ import os
 os.chdir('E:/   DataShapley')
 # os.chdir('/mnt/data/    /pycharm_project_236/tmp/pycharm_project_236/DataShapley')
 sys.path.append(os.getcwd())
-#sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
+#sys.path.append('/Users/ca-ml-01/Nutstore Files/c-a/Research/Data Valuation/DataShapley_Graph/DataShapley')
 
 ### Package and Environments for TMC_Shapley
 #%load_ext autoreload
@@ -178,7 +178,7 @@ Iris_TMC.to_csv(f'{save_dir}/Iris_TMC_1', index=False)
 ' 2) Breast Cancer '
 n_trials = 3
 m = 200
-save_dir = '/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/BC'
+save_dir = '/Users/ca-ml-01/Dropbox/c-a/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/BC'
 
 directory = './temp'
 os.makedirs(save_dir, exist_ok=True)
@@ -245,7 +245,7 @@ seed0        = 10231
 classes_pool = list(range(10))
 k_min, k_max = 2, 3
 
-save_dir = ("/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/"
+save_dir = ("/Users/ca-ml-01/Dropbox/c-a/Research/"
             "Data Valuation/DataShapley_Graph/"
             "Datasets/1000pts_I/MNIST")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
@@ -352,7 +352,7 @@ for i in range(1, n_trials + 1):
 
 
 ' 4) Vehicle '
-save_dir = "/Users/cuhksz-ml-01/Dropbox/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Vehicle"
+save_dir = "/Users/ca-ml-01/Dropbox/c-a/Research/Data Valuation/DataShapley_Graph/Datasets/1000pts_I/Vehicle"
 plot_dir = save_dir
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
