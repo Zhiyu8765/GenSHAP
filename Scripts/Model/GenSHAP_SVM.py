@@ -4,7 +4,7 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import re
 import warnings
 import dgl
@@ -592,6 +592,45 @@ class GINShap(torch.nn.Module):
 def _ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
+def save_state_dict_atomic(model, model_path: str):
+    model_dir = os.path.dirname(model_path) or "."
+    _ensure_dir(model_dir)
+    tmp_path = os.path.join(
+        model_dir,
+        f".{os.path.basename(model_path)}.tmp.{os.getpid()}",
+    )
+
+    try:
+        torch.save(model.state_dict(), tmp_path)
+        with open(tmp_path, "rb") as handle:
+            os.fsync(handle.fileno())
+
+        state = torch.load(tmp_path, map_location="cpu")
+        expected_key = "branches.0.0.apply_func.0.weight"
+        if not isinstance(state, dict) or expected_key not in state:
+            raise RuntimeError(
+                f"Temporary checkpoint is not a valid GenSHAP state_dict: {tmp_path}"
+            )
+
+        os.replace(tmp_path, model_path)
+        try:
+            dir_fd = os.open(model_dir, os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+    return os.path.getsize(model_path)
+
 def discover_datasets(base_dir: str, require_tmc: bool = False):
     TEST_RE = re.compile(r"^(.+?)_test_(\d+)(?:\.[^.]+)?$")
     TMC_RE = re.compile(r"^(.+?)_TMC_(\d+)(?:\.[^.]+)?$")
@@ -886,9 +925,10 @@ def train(model, dataset_graphs, *, epochs=500, lr=1e-5, weight_decay=1e-7,
         plt.close()
 
         ' Save model '
-        model_path = os.path.join(out_dir, "GNN_Multiclass_model_RandomPCA.pt")
-        torch.save(model.state_dict(), model_path)
+        model_path = os.path.join(out_dir, "GenSHAP_SVM.pt")
+        model_size = save_state_dict_atomic(model, model_path)
         print("model saved to: ", model_path)
+        print("model size (bytes): ", model_size)
 
     return rows
 
@@ -1171,9 +1211,9 @@ def train_then_diagnose(BASE_TRAIN: str, BASE_TEST: str, OUT_DIR: str, holdout_b
 ########################################  Experiments ###############################################
 
 if __name__ == "__main__":
-    BASE_TRAIN = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Train'
-    BASE_TEST  = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Test'
-    OUT_DIR    = '/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260504/Trial01'
+    BASE_TRAIN = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Train'
+    BASE_TEST  = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Datasets/1000pts_I/Base_SVM/Test'
+    OUT_DIR    = '/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/Outputs_II/260504/Trial02'
     HOLDOUTS   = ['Iris_1', 'Vehicle_1', 'STL10_27xxx_2', 'STL10_1279x_1', 'volkert_25_1', 'volkert_0678_2', 'BC_2']
 
     _ = train_then_diagnose(

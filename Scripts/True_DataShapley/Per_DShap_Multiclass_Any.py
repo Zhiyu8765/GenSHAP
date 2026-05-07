@@ -23,8 +23,8 @@ from sklearn.exceptions import ConvergenceWarning
 import sys
 print(sys.executable)
 import os
-os.chdir('E:/Zhiyu/DataShapley')
-# os.chdir('/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/DataShapley')
+os.chdir('E:/ DataShapley')
+# os.chdir('/mnt/data/  /pycharm_project_236/tmp/pycharm_project_236/DataShapley')
 sys.path.append(os.getcwd())
 #sys.path.append('/Users/cuhksz-ml-01/Nutstore Files/CUHK-SZ/Research/Data Valuation/DataShapley_Graph/DataShapley')
 
@@ -403,7 +403,7 @@ seed0        = 1112
 classes_pool = list(range(10))
 k_min, k_max = 2, 4
 c_pca = np.random.randint(5, 101)
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -512,7 +512,7 @@ seed0        = 1112
 classes_pool = list(range(10))
 k_min, k_max = 2, 5
 
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -621,7 +621,7 @@ seed0        = 1113
 classes_pool = list(range(100))
 k_min, k_max = 2, 5
 
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -751,7 +751,7 @@ classes_pool = sorted(y_pool.unique().tolist())  # actual label set in ImageNet-
 k_min, k_max = 2, 5   # number of classes per random task
 m_min, m_max = 950, 1001  # target train size per trial (test size = same)
 
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -884,7 +884,7 @@ seed0        = 260123
 k_min, k_max = 2, 5
 m_min, m_max = 950, 1001
 
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1022,7 +1022,7 @@ seed0        = 260123
 k_min, k_max = 2, 5       # number of classes per random task
 m_min, m_max = 950, 1001  # m train, m test per trial
 
-save_dir = "E:/Zhiyu/Datasets/Datasets_III"
+save_dir = "E:/ Datasets/Datasets_III"
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1140,7 +1140,7 @@ Datasets in OpenML
 n_trials     = 3
 seed0        = 260126
 k_min, k_max = 2, 5   # credit-g is binary; keep K=2
-save_dir = ("E:/Zhiyu/Datasets/Datasets_III")
+save_dir = ("E:/ Datasets/Datasets_III")
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1282,7 +1282,7 @@ k_min, k_max = 2, 5
 # Keep these modest for runtime; increase if you want
 m_min, m_max = 900, 1001   # train size = m, test size = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1479,7 +1479,7 @@ k_min, k_max = 2, 5
 # Adjust m for runtime; bank-marketing is large so 1000/1000 is fine
 m_min, m_max = 950, 1000     # train size = m, test size = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1674,7 +1674,7 @@ k_min, k_max = 2, 5
 # Train size = m, test size = m
 m_min, m_max = 950, 1000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1827,7 +1827,7 @@ k_min, k_max = 2, 5
 # Train size = m, test size = m
 m_min, m_max = 800, 900
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -1988,7 +1988,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2143,7 +2143,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2303,7 +2303,7 @@ seed0    = 260128
 k_min, k_max = 2, 3
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -2525,7 +2525,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000   # train = m, test = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -2667,7 +2667,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -2820,7 +2820,7 @@ seed0        = 260129
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -2974,7 +2974,7 @@ seed0        = 260130
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3131,7 +3131,7 @@ seed0        = 260130
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3310,7 +3310,7 @@ seed0        = 260130
 k_min, k_max = 2, 4         # jannis has multiple classes
 m_min, m_max = 900, 1000     # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"
+save_dir = r"E:/ Datasets/Datasets_III"
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -3447,7 +3447,7 @@ for i in range(1, n_trials + 1):
 
 
 ' Shuttle'
-REPO_DIR = r"E:/Zhiyu/DataShapley_Graph/Datasets_III"
+REPO_DIR = r"E:/ DataShapley_Graph/Datasets_III"
 if os.path.isdir(REPO_DIR):
     os.chdir(REPO_DIR)
     sys.path.append(os.getcwd())
@@ -3458,7 +3458,7 @@ seed0        = 260202
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls):
@@ -3623,7 +3623,7 @@ seed0        = 260202
 k_min, k_max = 2, 5
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls):
@@ -3784,7 +3784,7 @@ k_min, k_max = 2, 5
 
 m_min, m_max = 900, 1000  # train=m, test=m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -3957,7 +3957,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 def tag_from_classes(cls_list):
@@ -4169,7 +4169,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 X_pool, y_raw = fetch_openml(
@@ -4362,7 +4362,7 @@ k_min, k_max = 2, 5
 PCA_TARGET = np.random.randint(5, 101)
 N_PERM     = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"
+save_dir = r"E:/ Datasets/Datasets_III"
 os.makedirs(save_dir, exist_ok=True)
 
 # =========================================================
@@ -4591,7 +4591,7 @@ N_PERM     = 5000
 # m random in [900, 1000]
 m_lo, m_hi = 900, 1000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 # =========================================================
@@ -4803,7 +4803,7 @@ m_min, m_max = 950, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"   # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"   # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 # ---- load autos by name ----
@@ -4970,7 +4970,7 @@ N_PERM       = 5000
 # pick m based on typical size; adjust if you want
 m_min, m_max = 900, 1000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"   # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"   # EDIT
 os.makedirs(save_dir, exist_ok=True)
 # -----------------------------
 # Load from OpenML
@@ -5160,7 +5160,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"   # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"   # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -5368,7 +5368,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -5582,7 +5582,7 @@ m_min, m_max = 900, 1000
 PCA_TARGET   = np.random.randint(5, 101)
 N_PERM       = 5000
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"  # EDIT
+save_dir = r"E:/ Datasets/Datasets_III"  # EDIT
 os.makedirs(save_dir, exist_ok=True)
 
 # -----------------------------
@@ -5804,7 +5804,7 @@ seed0        = 260326
 k_min, k_max = 2, 5          # random K-way task from the 7 bean classes
 m_min, m_max = 900, 1000     # train size = m, test size = m
 
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"   # EDIT if needed
+save_dir = r"E:/ Datasets/Datasets_III"   # EDIT if needed
 plot_dir = os.path.join(save_dir, "PerformancePlots")
 os.makedirs(save_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
@@ -5975,7 +5975,7 @@ m_min, m_max = 900, 1000
 max_subset_attempts = 500
 
 # save location
-save_dir = r"E:/Zhiyu/Datasets/Datasets_III"   # change if needed
+save_dir = r"E:/ Datasets/Datasets_III"   # change if needed
 os.makedirs(save_dir, exist_ok=True)
 
 

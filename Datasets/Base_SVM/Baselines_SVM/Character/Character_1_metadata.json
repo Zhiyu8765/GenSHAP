@@ -1,0 +1,114 @@
+{
+  "combined_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Character/Character_1_all_baselines.csv",
+  "dataset": "Character",
+  "feature_columns": [
+    "PC1",
+    "PC2",
+    "PC3",
+    "PC4",
+    "PC5",
+    "PC6",
+    "PC7"
+  ],
+  "file_tag": "Character",
+  "pca_components": 7,
+  "pca_explained_variance_ratio_sum": 1.0,
+  "preprocessing": "median impute -> StandardScaler -> PCA -> StandardScaler",
+  "runtime_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Character/Character_1_runtimes.csv",
+  "script_args": {
+    "datasets": [
+      "iris",
+      "vehicle",
+      "character",
+      "volkert",
+      "breast_cancer"
+    ],
+    "mc_multiplier": 3,
+    "n_jobs": 4,
+    "output_root": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM",
+    "pca_components": 20,
+    "permutations": 5000,
+    "random_state": 251013,
+    "test_size": 200,
+    "train_size": 200
+  },
+  "source": "OpenML artificial-characters",
+  "svm_params": {
+    "C": 1.0,
+    "cache_size": 1000,
+    "decision_function_shape": "ovr",
+    "gamma": "scale",
+    "kernel": "rbf"
+  },
+  "test_class_counts": {
+    "0": 20,
+    "1": 20,
+    "2": 20,
+    "3": 20,
+    "4": 20,
+    "5": 20,
+    "6": 20,
+    "7": 20,
+    "8": 20,
+    "9": 20
+  },
+  "test_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Character/Character_test_1.csv",
+  "test_size": 200,
+  "tmc_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Character/Character_TMC_1.csv",
+  "train_class_counts": {
+    "0": 20,
+    "1": 20,
+    "2": 20,
+    "3": 20,
+    "4": 20,
+    "5": 20,
+    "6": 20,
+    "7": 20,
+    "8": 20,
+    "9": 20
+  },
+  "train_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Character/Character_1.csv",
+  "train_size": 200,
+  "valuation_settings": {
+    "beta_shapley": {
+      "alpha": 1,
+      "beta": 16
+    },
+    "data_banzhaf": {
+      "max_updates": 600,
+      "sampler": "PermutationSampler"
+    },
+    "delta_shapley": {
+      "lower_bound": 66,
+      "n_samples": 600,
+      "power_law_exponent": 0.0,
+      "upper_bound": 133
+    },
+    "group_testing_shapley": {
+      "epsilon": 0.05,
+      "n_samples": 600
+    },
+    "mc_budget": 600,
+    "n_train": 200,
+    "owen_shapley": {
+      "n_samples_inner": 2,
+      "target_samples": 7680
+    },
+    "permutation_data_shapley": {
+      "implementation": "repo-style untruncated permutation loop with sklearn SVC",
+      "n_permutations": 5000,
+      "truncation": null
+    },
+    "rank_burn_in": 240,
+    "rank_rtol": 0.001,
+    "tmc": {
+      "err": 0.1,
+      "g_run": false,
+      "implementation": "DataShapley.DShap",
+      "loo_run": false,
+      "model_family": "SVC",
+      "save_every": 100,
+      "tolerance": 0.01
+    }
+  }
+}

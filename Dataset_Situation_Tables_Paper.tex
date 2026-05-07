@@ -1,0 +1,121 @@
+% Requires: \usepackage{booktabs,longtable,array}
+\paragraph{Dataset protocol.}
+For each base-model family, we organize the data as paired train/evaluation subsets. The train side of each pair contains the samples whose permutation-based Shapley values are computed, and the matched evaluation side is used to evaluate the utility of candidate subsets. Importantly, the GenSHAP training process is performed only on the datasets labeled as \emph{Training} in Tables~\ref{tab:dataset-situation-lr} and~\ref{tab:dataset-situation-svm}. The datasets labeled as \emph{Unseen test} are held out at the dataset level: no samples, labels, graphs, or Shapley values from these datasets are used to optimize GenSHAP parameters. They are used only after training to evaluate cross-dataset generalization on previously unseen datasets.
+
+\begin{scriptsize}
+\setlength{\tabcolsep}{5pt}
+\begin{longtable}{p{4.1cm}p{2.2cm}r p{3.5cm}}
+\caption{Dataset situation for the LR base-model setting. Rows marked \emph{Unseen test} are held-out datasets that are not used during GenSHAP training.}\label{tab:dataset-situation-lr}\\
+\toprule
+Dataset & Use & \# subsets & PCA setting \\
+\midrule
+\endfirsthead
+\toprule
+Dataset & Use & \# subsets & PCA setting \\
+\midrule
+\endhead
+\midrule
+\multicolumn{4}{r}{Continued on next page} \\
+\endfoot
+\bottomrule
+\endlastfoot
+Artificial Characters & Training & 3 & PCA \\
+Autos & Training & 3 & PCA \\
+Bank Marketing & Training & 3 & PCA \\
+Caltech101 & Training & 3 & PCA \\
+CIFAR-10 & Training & 3 & PCA \\
+CIFAR-100 & Training & 3 & PCA \\
+Connect-4 & Training & 3 & PCA \\
+Covertype & Training & 3 & PCA \\
+CovPokElec & Training & 3 & PCA \\
+Credit Score & Training & 3 & PCA \\
+Devnagari-Script & Training & 3 & PCA \\
+Dilbert & Training & 3 & PCA \\
+Dry Bean & Training & 3 & PCA \\
+FashionMNIST & Training & 3 & PCA \\
+Financial Risk & Training & 3 & PCA \\
+Gas Drift & Training & 3 & PCA \\
+HAR & Training & 3 & PCA \\
+hls4ml LHC Jets HLF & Training & 3 & PCA \\
+ImageNet-A & Training & 3 & PCA \\
+Jannis & Training & 3 & PCA \\
+Kuzushiji-MNIST & Training & 3 & PCA \\
+LED(50000) & Training & 3 & PCA \\
+Letter & Training & 1 & PCA \\
+Nomao & Training & 3 & PCA \\
+Pendigits & Training & 3 & PCA \\
+Pokerhand & Training & 3 & PCA \\
+RandomRBF 0 0 & Training & 3 & PCA \\
+RT-IoT2022 & Training & 3 & PCA \\
+SDSS17 & Training & 3 & PCA \\
+Shuttle & Training & 3 & PCA \\
+Spoken Arabic Digit & Training & 3 & PCA \\
+STL10 & Training & 3 & PCA \\
+Volkert & Training & 3 & PCA \\
+WBCAtt & Training & 3 & PCA \\
+Artificial Characters & Unseen test & 1 & PCA \\
+Iris & Unseen test & 1 & No PCA (dimensions < 20) \\
+STL10 & Unseen test & 1 & PCA \\
+Vehicle & Unseen test & 1 & No PCA (dimensions < 20) \\
+Volkert & Unseen test & 2 & PCA \\
+\end{longtable}
+\end{scriptsize}
+
+\begin{scriptsize}
+\setlength{\tabcolsep}{5pt}
+\begin{longtable}{p{4.1cm}p{2.2cm}r p{3.5cm}}
+\caption{Dataset situation for the SVM base-model setting. Rows marked \emph{Unseen test} are held-out datasets that are not used during GenSHAP training.}\label{tab:dataset-situation-svm}\\
+\toprule
+Dataset & Use & \# subsets & PCA setting \\
+\midrule
+\endfirsthead
+\toprule
+Dataset & Use & \# subsets & PCA setting \\
+\midrule
+\endhead
+\midrule
+\multicolumn{4}{r}{Continued on next page} \\
+\endfoot
+\bottomrule
+\endlastfoot
+Artificial Characters & Training & 3 & PCA \\
+Autos & Training & 3 & PCA \\
+Bank Marketing & Training & 3 & PCA \\
+Breast Cancer & Training & 1 & PCA \\
+Caltech101 & Training & 3 & PCA \\
+CIFAR-10 & Training & 3 & PCA \\
+CIFAR-100 & Training & 3 & PCA \\
+Connect-4 & Training & 3 & PCA \\
+Covertype & Training & 3 & PCA \\
+CovPokElec & Training & 3 & PCA \\
+Credit Score & Training & 3 & PCA \\
+Devnagari-Script & Training & 3 & PCA \\
+Dilbert & Training & 3 & PCA \\
+Dry Bean & Training & 3 & PCA \\
+FashionMNIST & Training & 3 & PCA \\
+Financial Risk & Training & 3 & PCA \\
+Gas Drift & Training & 3 & PCA \\
+HAR & Training & 3 & PCA \\
+hls4ml LHC Jets HLF & Training & 3 & PCA \\
+ImageNet-A & Training & 3 & PCA \\
+Jannis & Training & 3 & PCA \\
+Kuzushiji-MNIST & Training & 3 & PCA \\
+LED(50000) & Training & 3 & PCA \\
+Letter & Training & 3 & PCA \\
+MNIST & Training & 3 & PCA \\
+Nomao & Training & 3 & PCA \\
+Pendigits & Training & 3 & PCA \\
+Pokerhand & Training & 3 & PCA \\
+RandomRBF 0 0 & Training & 3 & PCA \\
+RT-IoT2022 & Training & 3 & PCA \\
+SDSS17 & Training & 3 & PCA \\
+Shuttle & Training & 3 & PCA \\
+Spoken Arabic Digit & Training & 3 & PCA \\
+WBCAtt & Training & 3 & PCA \\
+Breast Cancer & Unseen test & 2 & PCA \\
+Iris & Unseen test & 1 & No PCA (dimensions < 20) \\
+STL10 & Unseen test & 3 & PCA \\
+Vehicle & Unseen test & 1 & No PCA (dimensions < 20) \\
+Volkert & Unseen test & 3 & PCA \\
+\end{longtable}
+\end{scriptsize}

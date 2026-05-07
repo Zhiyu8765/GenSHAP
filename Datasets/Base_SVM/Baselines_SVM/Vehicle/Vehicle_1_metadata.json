@@ -1,0 +1,181 @@
+{
+  "categorical_columns": [],
+  "combined_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Vehicle/Vehicle_1_all_baselines.csv",
+  "dataset": "Vehicle",
+  "feature_columns": [
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "f13",
+    "f14",
+    "f15",
+    "f16",
+    "f17",
+    "f18"
+  ],
+  "file_tag": "Vehicle",
+  "numeric_columns": [
+    "COMPACTNESS",
+    "CIRCULARITY",
+    "DISTANCE_CIRCULARITY",
+    "RADIUS_RATIO",
+    "PR.AXIS_ASPECT_RATIO",
+    "MAX.LENGTH_ASPECT_RATIO",
+    "SCATTER_RATIO",
+    "ELONGATEDNESS",
+    "PR.AXIS_RECTANGULARITY",
+    "MAX.LENGTH_RECTANGULARITY",
+    "SCALED_VARIANCE_MAJOR",
+    "SCALED_VARIANCE_MINOR",
+    "SCALED_RADIUS_OF_GYRATION",
+    "SKEWNESS_ABOUT_MAJOR",
+    "SKEWNESS_ABOUT_MINOR",
+    "KURTOSIS_ABOUT_MAJOR",
+    "KURTOSIS_ABOUT_MINOR",
+    "HOLLOWS_RATIO"
+  ],
+  "openml_details": {
+    "citation": "Siebert,JP. Turing Institute Research Memorandum TIRM-87-018 \"Vehicle Recognition Using Rule Based Methods\" (March 1987)",
+    "collection_date": "1986",
+    "creator": [
+      "Dr. Pete Mowforth",
+      "Dr. Barry Shepherd"
+    ],
+    "default_target_attribute": "Class",
+    "description_version": "2",
+    "file_id": "54",
+    "format": "ARFF",
+    "id": "54",
+    "language": "English",
+    "licence": "Public",
+    "md5_checksum": "fbba18157b188f309d772f9ca4e578f5",
+    "name": "vehicle",
+    "original_data_url": "https://archive.ics.uci.edu/ml/datasets/Statlog+(Vehicle+Silhouettes)",
+    "paper_url": "https://eprints.gla.ac.uk/91397/",
+    "parquet_url": "https://data.openml.org/datasets/0000/0054/dataset_54.pq",
+    "processing_date": "2020-11-20 19:41:24",
+    "status": "active",
+    "tag": [
+      "Machine Learning",
+      "OpenML-CC18",
+      "OpenML100",
+      "study_1",
+      "study_123",
+      "study_127",
+      "study_135",
+      "study_14",
+      "study_218",
+      "study_34",
+      "study_37",
+      "study_41",
+      "study_50",
+      "study_52",
+      "study_7",
+      "study_70",
+      "study_98",
+      "study_99",
+      "Transport",
+      "uci"
+    ],
+    "upload_date": "2014-04-06T23:23:10",
+    "url": "https://openml.org/data/v1/download/54/vehicle.arff",
+    "version": "1",
+    "version_label": "1",
+    "visibility": "public"
+  },
+  "preprocessing": "ColumnTransformer numeric StandardScaler/categorical one-hot -> StandardScaler",
+  "runtime_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Vehicle/Vehicle_1_runtimes.csv",
+  "script_args": {
+    "datasets": [
+      "iris",
+      "vehicle",
+      "character",
+      "volkert",
+      "breast_cancer"
+    ],
+    "mc_multiplier": 3,
+    "n_jobs": 4,
+    "output_root": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM",
+    "pca_components": 20,
+    "permutations": 5000,
+    "random_state": 251013,
+    "test_size": 200,
+    "train_size": 200
+  },
+  "source": "OpenML vehicle v1, UCI Statlog Vehicle Silhouettes",
+  "svm_params": {
+    "C": 1.0,
+    "cache_size": 1000,
+    "decision_function_shape": "ovr",
+    "gamma": "scale",
+    "kernel": "rbf"
+  },
+  "test_class_counts": {
+    "0": 50,
+    "1": 50,
+    "2": 50,
+    "3": 50
+  },
+  "test_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Vehicle/Vehicle_test_1.csv",
+  "test_size": 200,
+  "tmc_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Vehicle/Vehicle_TMC_1.csv",
+  "train_class_counts": {
+    "0": 50,
+    "1": 50,
+    "2": 50,
+    "3": 50
+  },
+  "train_path": "/mnt/data/ZhiyuChen/pycharm_project_236/tmp/pycharm_project_236/Datasets/Base_SVM/Baselines_SVM/Vehicle/Vehicle_1.csv",
+  "train_size": 200,
+  "valuation_settings": {
+    "beta_shapley": {
+      "alpha": 1,
+      "beta": 16
+    },
+    "data_banzhaf": {
+      "max_updates": 600,
+      "sampler": "PermutationSampler"
+    },
+    "delta_shapley": {
+      "lower_bound": 66,
+      "n_samples": 600,
+      "power_law_exponent": 0.0,
+      "upper_bound": 133
+    },
+    "group_testing_shapley": {
+      "epsilon": 0.05,
+      "n_samples": 600
+    },
+    "mc_budget": 600,
+    "n_train": 200,
+    "owen_shapley": {
+      "n_samples_inner": 2,
+      "target_samples": 7680
+    },
+    "permutation_data_shapley": {
+      "implementation": "repo-style untruncated permutation loop with sklearn SVC",
+      "n_permutations": 5000,
+      "truncation": null
+    },
+    "rank_burn_in": 240,
+    "rank_rtol": 0.001,
+    "tmc": {
+      "err": 0.1,
+      "g_run": false,
+      "implementation": "DataShapley.DShap",
+      "loo_run": false,
+      "model_family": "SVC",
+      "save_every": 100,
+      "tolerance": 0.01
+    }
+  }
+}
