@@ -4,7 +4,11 @@
 0. Import Packages
 '''
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+FORCE_CPU = os.environ.get("GENSHAP_FORCE_CPU", "0") == "1"
+if FORCE_CPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+else:
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "3")
 import re
 from pathlib import Path
 import dgl
@@ -31,9 +35,13 @@ DATASETS_DIR = (PROJECT_ROOT / "Datasets").resolve()
 OUTPUTS_DIR = (PROJECT_ROOT / "Outputs_II").resolve()
 
 'Check Availability of GPU'
-torch.cuda.set_device(0)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if not FORCE_CPU and torch.cuda.is_available():
+    torch.cuda.set_device(0)
+device = torch.device(
+    "cpu" if FORCE_CPU else ("cuda" if torch.cuda.is_available() else "cpu")
+)
 print("CUDA available:", torch.cuda.is_available())
+print("Using device:", device)
 if torch.cuda.is_available():
     print("Current device:", torch.cuda.current_device())
     print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))

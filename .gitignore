@@ -12,6 +12,10 @@ MLPbV/
 Scripts/Additional_Scripts/
 Scripts/Discarded/
 Scripts/Experiment_Plots/
+tmp/
+Datasets/Base_LR/Multi_V2/
+Datasets/Base_LR/Multi_V2_KFold3/
+Scripts/Rebuttal/
 *.pt
 *.pth
 *.ckpt
