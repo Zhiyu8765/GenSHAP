@@ -1,5 +1,8 @@
 # GenSHAP
-## Towards Generalizable Data Valuation: Learning An End-to-end Deep Model to Compute Shapley Values
+## Towards Generalizable Data Valuation: Learning An End-to-end Deep Model to Compute Shapley Values 
+**Zhiyu Chen, Jicong Fan**  
+*NeurIPS 2026*
+
 GenSHAP is a research codebase for efficient data valuation. It learns to approximate personalized Data Shapley values by representing each dataset as a graph and training graph neural models to predict the contribution of each training example.
 
 The repository includes implementations for logistic-regression and SVM base-model settings, scripts for computing reference Data Shapley values, baseline comparisons, experiment plots, and generated evaluation outputs.
