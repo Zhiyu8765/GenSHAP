@@ -1,5 +1,5 @@
 # GenSHAP
-## Towards Generalizable Data Valuation: Learning An End-to-end Deep Model to Compute Shapley Values 
+## Towards Generalizable Data Valuation: Learning An End-to-end Deep Model to Estimate Shapley Values 
 **Zhiyu Chen, Jicong Fan**  
 *NeurIPS 2026*
 
